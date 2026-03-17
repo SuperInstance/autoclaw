@@ -82,86 +82,50 @@ I think these would be the reasonable hyperparameters to play with. Ask your fav
 
 ---
 
-## Extended Vision: Autonomous Fact-Checking Wiki System
+## 📋 What's Included vs. What's Planned
 
-This repo is a foundation for a much larger system that combines autoresearch with the **SuperInstance ecosystem** to create a continually-bettering research platform. See **[ARCHITECTURE.md](ARCHITECTURE.md)** for full details.
+**This README covers the MVP** (what's available now). We're actively developing extended features.
 
-### The System at a Glance
+### What Works Today ✅
 
-Instead of just optimizing a language model, use autoresearch as the engine for:
-- **Autonomous research swarms**: Multiple specialist agents investigate topics in parallel via `spreader-tool`
-- **Semantic wiki**: Findings auto-populate a knowledge graph in `murmur` with AI-powered semantic linking
-- **Real-time monitoring**: Track experiment metrics on `spreadsheet-moment` dashboards
-- **Deterministic validation**: Fact-check claims using `constraint-theory` geometric solvers (not probabilistic)
-- **Podcast generation**: Transform research into audio narratives with evidence citations
-- **Sandbox exploration**: Enter "flowstate" mode for radical ideas, record all analysis in cold storage
-- **Configurable retention**: Global + per-file data policies for research archival
+- Single-GPU model optimization
+- 5-minute time-budgeted experiments
+- Autonomous agent that modifies and tests train.py
+- Git-based experiment tracking
+- Results analysis tools
+- Multi-agent framework (prompts/tools coming soon)
 
-### Key Integration Points
+### What's Coming Soon 🚧
 
-| Component | Purpose | Link |
-|-----------|---------|------|
-| **autoresearch** | Autonomous 5-minute experiments | (this repo) |
-| **spreader-tool** | Multi-agent orchestration | https://github.com/SuperInstance/spreader-tool |
-| **murmur** | Semantic knowledge management | https://github.com/SuperInstance/murmur |
-| **spreadsheet-moment** | Data interface & monitoring | https://github.com/SuperInstance/spreadsheet-moment |
-| **constraint-theory** | Deterministic fact-checking | https://github.com/SuperInstance/constraint-theory |
-| **superinstance-papers** | 65+ theoretical foundations | https://github.com/SuperInstance/superinstance-papers |
+**Q2 2026 (2-3 weeks):**
+- Agent prompts and tools (multi-agent coordination)
+- murmur semantic wiki integration (POC)
+- Business documentation and ROI calculator
 
-### Example: Weekly Research Cycle
+**Q3-Q4 2026:**
+- Full semantic knowledge graph with fact-checking
+- Podcast generation from research
+- Dashboard monitoring
+- constraint-theory validation framework
 
-```
-Monday - Friday: Autonomous Research
-├─ spreader-tool orchestrates specialist agents
-├─ Each agent runs 100+ autoresearch experiments/day
-├─ murmur auto-populates semantic knowledge graph
-├─ spreadsheet-moment dashboard tracks metrics
-└─ constraint-theory validates all findings
+**See [SCOPE.md](SCOPE.md)** for detailed roadmap and timeline.
 
-Friday Evening: Output Generation
-├─ Top 10 insights extracted + synthesized
-├─ Podcast episode script generated
-├─ Wiki articles updated in murmur
-└─ Research data archived to cold storage
+---
 
-Weekend: Community Review
-├─ murmur bulletin board: researchers vote/challenge findings
-├─ Dispute resolution
-└─ Planning next week's research directions
-```
+## 🔮 Extended Vision: Autonomous Fact-Checking Wiki
 
-### Use Cases
+This repo is designed as a foundation for a larger system combining autoresearch with the **SuperInstance ecosystem**. When complete, it will support:
 
-- **Continuously Growing Wiki**: Auto-populate semantic knowledge base from research
-- **Podcast Content**: Generate weekly episodes from curated research findings
-- **Creative Pontification**: Explore radical ideas in flowstate sandbox mode
-- **Research Database**: Archive all analysis with configurable retention policies
-- **Academic Publishing**: Automated paper generation from validated findings
-- **Constraint-Driven Domains**: Physics, optimization, formal verification, etc.
+- **Autonomous research swarms** via `spreader-tool`
+- **Semantic wiki** via `murmur`
+- **Real-time dashboards** via `spreadsheet-moment`
+- **Deterministic fact-checking** via `constraint-theory`
+- **Podcast generation** from research findings
+- **Configurable data retention** with cold storage
 
-### Getting Started with Extended System
+**Status:** Framework in place, features shipping Q2-Q4 2026. See [SCOPE.md](SCOPE.md) for what's done vs. planned.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for:
-- Complete system architecture diagrams
-- Fact-checking pipeline details
-- Cold storage & retention management
-- Sandbox/flowstate mode explanation
-- Data flow examples
-- Integration guide with SuperInstance components
-- Open questions & future work
-
-Quick setup for autoresearch alone:
-```bash
-uv sync
-uv run prepare.py
-uv run train.py
-```
-
-To integrate with extended system:
-1. Deploy murmur, spreader-tool, spreadsheet-moment locally
-2. Configure retention policies
-3. Extend `program.md` with research directions
-4. Let agents explore autonomously
+For the full technical vision, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---
 
