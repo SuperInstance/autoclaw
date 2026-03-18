@@ -1,0 +1,456 @@
+# ============================================================================
+# FLOWSTATE / SANDBOX SCHEMA
+# ============================================================================
+# Defines the exploratory research sandbox mode for the crew.
+#
+# PROBLEM: The crew's primary knowledge graph must be reliable — only validated,
+# high-confidence insights. But research requires exploration: trying radical
+# ideas, testing unproven hypotheses, following hunches. If every exploratory
+# idea goes into the main knowledge graph, quality degrades.
+#
+# SOLUTION: Flowstate mode. A temporary sandbox where the crew can:
+#   - Explore radical, unvalidated ideas freely
+#   - Run speculative experiments without contaminating primary knowledge
+#   - Record everything (including failures) for later analysis
+#   - Selectively promote findings to the primary graph after review
+#
+# FLOWSTATE LIFECYCLE:
+#   1. Enter flowstate (captain command or crew self-initiation)
+#   2. All findings go to sandbox graph (not primary)
+#   3. No constraint validation, no community review
+#   4. Record everything: hypotheses, experiments, failures, reasoning
+#   5. Exit flowstate → review period begins
+#   6. Captain or crew selects findings to promote
+#   7. Promoted findings pass validation before entering primary graph
+#   8. All sandbox data archived to cold storage
+#
+# IMPLEMENTATION NOTES:
+# - Sandbox knowledge stored in data/flowstate/{session_id}/knowledge.yaml
+# - Sandbox experiments in data/flowstate/{session_id}/experiments/
+# - Promotion queue in data/flowstate/{session_id}/promotion_queue.yaml
+# - Archive in data/flowstate/archive/{session_id}.tar.gz
+# ============================================================================
+
+flowstate_session:
+  id:
+    type: string
+    pattern: "flowstate_{YYYYMMDD}_{sequence}"
+    example: "flowstate_20260318_001"
+    description: "Unique flowstate session identifier"
+
+  # --- Identity ---
+  title:
+    type: string
+    description: "Short description of what this flowstate session is exploring"
+    example: "Radical hypothesis: attention-free transformers for our domain"
+
+  hypothesis:
+    type: string
+    description: |
+      The core hypothesis or question driving this flowstate session.
+      Should be specific enough to evaluate at the end.
+    example: |
+      Hypothesis: Replacing standard attention with linear attention (O(n) vs O(n²))
+      will reduce training time by 40%+ with < 2% val_bpb degradation at our scale.
+
+  initiated_by:
+    type: enum
+    values:
+      - captain       # Captain explicitly started flowstate
+      - crew          # Crew self-initiated during study mode
+      - trigger       # External trigger suggested exploration
+    description: "Who started this flowstate session"
+
+  # --- Status ---
+  status:
+    type: enum
+    values:
+      - active        # Currently in flowstate
+      - reviewing     # Flowstate ended, reviewing findings
+      - promoting     # Promoting selected findings to primary graph
+      - archived      # All data moved to cold storage
+    default: active
+
+  # --- Sandbox Knowledge ---
+  sandbox_knowledge:
+    type: object
+    description: "Knowledge accumulated during this flowstate (not yet in primary graph)"
+    fields:
+      entries:
+        type: list
+        items:
+          type: object
+          description: "Same structure as knowledge_entry (see knowledge.yaml)"
+          fields:
+            id: {type: integer}
+            insight: {type: string}
+            category: {type: string}
+            confidence: {type: string}
+            sandbox_only: {type: boolean, default: true}
+            promotion_status:
+              type: enum
+              values:
+                - pending     # Not yet reviewed
+                - promoted    # Selected for primary graph
+                - rejected    # Decided not to promote
+                - failed_validation  # Tried to promote but failed validation
+              default: pending
+
+      total_entries:
+        type: integer
+        default: 0
+
+      promoted_count:
+        type: integer
+        default: 0
+        description: "Entries successfully promoted to primary graph"
+
+  # --- Experiments ---
+  experiments:
+    type: object
+    fields:
+      total_run:
+        type: integer
+        default: 0
+
+      successful:
+        type: integer
+        default: 0
+
+      failed:
+        type: integer
+        default: 0
+
+      notable_results:
+        type: list
+        items:
+          type: object
+          fields:
+            experiment_id: {type: string}
+            description: {type: string}
+            outcome: {type: string}
+            commit_hash: {type: string, nullable: true}
+            promoted: {type: boolean, default: false}
+
+  # --- Exploration Log ---
+  exploration_log:
+    type: list
+    items:
+      type: object
+      fields:
+        timestamp:
+          type: datetime
+        entry_type:
+          type: enum
+          values:
+            - hypothesis    # New hypothesis formed
+            - experiment    # Experiment run
+            - finding       # Interesting finding noted
+            - dead_end      # Approach abandoned
+            - pivot         # Changed direction
+            - insight       # Generalizable insight extracted
+        content:
+          type: string
+          description: "What happened or was discovered"
+        related_experiment_id:
+          type: string
+          nullable: true
+    description: |
+      Chronological log of the exploration. Captures the crew's reasoning
+      process, including dead ends and pivots. Valuable for:
+        - Understanding why certain approaches were abandoned
+        - Pattern mining across multiple flowstate sessions
+        - Teaching future crews what NOT to try
+
+  # --- Retention Policy ---
+  retention:
+    type: object
+    description: "How long to keep this flowstate data"
+    fields:
+      keep_sandbox_days:
+        type: integer
+        default: 90
+        description: "Days to keep full sandbox data before archiving"
+
+      keep_archive_days:
+        type: integer
+        nullable: true
+        default: 365
+        description: "Days to keep archived data (null = keep forever)"
+
+      compress_after_days:
+        type: integer
+        default: 30
+        description: "Days before compressing sandbox data"
+
+      reason:
+        type: string
+        nullable: true
+        description: "Why this retention policy was chosen"
+        example: "Longitudinal study — keep longer for cross-session analysis"
+
+  # --- Lifecycle ---
+  started_at:
+    type: datetime
+    generated: true
+
+  ended_at:
+    type: datetime
+    nullable: true
+    description: "When flowstate mode was exited"
+
+  archived_at:
+    type: datetime
+    nullable: true
+
+  duration_hours:
+    type: float
+    nullable: true
+    description: "Total hours spent in flowstate"
+
+  # --- Review Summary ---
+  review_summary:
+    type: object
+    nullable: true
+    description: "Populated after review period completes"
+    fields:
+      reviewer:
+        type: enum
+        values: [captain, crew, both]
+
+      verdict:
+        type: enum
+        values:
+          - valuable      # Found useful insights worth promoting
+          - mixed         # Some useful, some not
+          - dead_end      # Nothing worth promoting
+          - breakthrough  # Major finding that changes direction
+
+      key_findings:
+        type: list
+        items:
+          type: string
+        description: "Most important findings from this session"
+
+      lessons_learned:
+        type: list
+        items:
+          type: string
+        description: "What the crew learned about HOW to explore (meta-learning)"
+
+      follow_up_tasks:
+        type: list
+        items:
+          type: object
+          fields:
+            title: {type: string}
+            reason: {type: string}
+            priority: {type: integer}
+        description: "Tasks to create based on flowstate findings"
+
+# ============================================================================
+# PROMOTION QUEUE SCHEMA
+# ============================================================================
+# Tracks which sandbox findings are being considered for promotion.
+
+promotion_candidate:
+  flowstate_session_id:
+    type: string
+    description: "Which flowstate session this came from"
+
+  sandbox_entry_id:
+    type: integer
+    description: "ID of the knowledge entry in the sandbox"
+
+  insight:
+    type: string
+    description: "The insight being considered for promotion"
+
+  promotion_rationale:
+    type: string
+    description: "Why this should be promoted to the primary graph"
+
+  validation_required:
+    type: boolean
+    default: true
+    description: |
+      Whether this finding needs experimental validation before promotion.
+      High-confidence findings from multiple experiments may skip validation.
+
+  validation_experiments:
+    type: list
+    items:
+      type: integer
+    default: []
+    description: "Task IDs of validation experiments (if validation_required)"
+
+  status:
+    type: enum
+    values:
+      - pending_review      # Awaiting captain/crew review
+      - approved            # Approved for promotion
+      - rejected            # Decided not to promote
+      - validating          # Running validation experiments
+      - validation_passed   # Validation complete, ready to promote
+      - validation_failed   # Validation showed finding is incorrect
+      - promoted            # Successfully added to primary knowledge graph
+    default: pending_review
+
+  primary_entry_id:
+    type: integer
+    nullable: true
+    description: "ID in primary knowledge graph (set after successful promotion)"
+
+  created_at:
+    type: datetime
+    generated: true
+
+  decided_at:
+    type: datetime
+    nullable: true
+
+# ============================================================================
+# FLOWSTATE RULES
+# ============================================================================
+#
+# WHEN TO ENTER FLOWSTATE:
+#   - Captain explicitly requests it: "crew flowstate start 'Explore X'"
+#   - Crew self-initiates during study mode when:
+#     * A hunch is too speculative for the main task board
+#     * An experiment produced an unexpected result worth investigating
+#     * The crew wants to test a radical hypothesis without risk
+#
+# WHAT CHANGES IN FLOWSTATE:
+#   - All knowledge entries go to sandbox (not primary graph)
+#   - Experiments are tagged as flowstate (separate results directory)
+#   - No automatic promotion to primary graph
+#   - Exploration log is kept (normally not kept for study mode)
+#   - Constraint validation is optional (not required)
+#
+# WHAT STAYS THE SAME:
+#   - Task board still operates normally
+#   - Captain can interrupt flowstate at any time
+#   - Cloudflare credit limits still apply
+#   - Hardware profile still applies
+#
+# EXITING FLOWSTATE:
+#   - Captain command: "crew flowstate end"
+#   - Crew self-exits after N hours (configurable, default 4h)
+#   - Crew self-exits when hypothesis is confirmed or refuted
+#   - Automatic exit if primary task queue grows too long
+#
+# PROMOTION RULES:
+#   - Captain reviews promotion queue: "crew flowstate review"
+#   - Crew can auto-promote if confidence >= very_high AND experiments >= 5
+#   - All promotions logged with rationale
+#   - Rejected findings archived (not deleted) for future reference
+
+# ============================================================================
+# EXAMPLES
+# ============================================================================
+
+examples:
+  active_flowstate:
+    id: "flowstate_20260318_001"
+    title: "Linear attention hypothesis"
+    hypothesis: |
+      Replacing standard O(n²) attention with linear attention will reduce
+      training time by 40%+ with < 2% val_bpb degradation at DEPTH=8.
+    initiated_by: crew
+    status: active
+    sandbox_knowledge:
+      entries:
+        - id: 1
+          insight: "Linear attention (Performer) reduces training time by 35% at DEPTH=8"
+          category: architecture
+          confidence: medium
+          sandbox_only: true
+          promotion_status: pending
+        - id: 2
+          insight: "Linear attention degrades val_bpb by 3.2% at DEPTH=8 — exceeds 2% threshold"
+          category: architecture
+          confidence: high
+          sandbox_only: true
+          promotion_status: pending
+      total_entries: 2
+      promoted_count: 0
+    experiments:
+      total_run: 6
+      successful: 5
+      failed: 1
+      notable_results:
+        - experiment_id: "exp_0312"
+          description: "Linear attention (Performer) at DEPTH=8"
+          outcome: "val_bpb=1.038 vs baseline 1.006 — 3.2% degradation"
+          commit_hash: "b4c5d6e"
+          promoted: false
+    exploration_log:
+      - timestamp: "2026-03-18T09:00:00Z"
+        entry_type: hypothesis
+        content: "Hypothesis: linear attention will be faster with acceptable quality loss"
+      - timestamp: "2026-03-18T09:15:00Z"
+        entry_type: experiment
+        content: "Running Performer attention at DEPTH=8, LR=0.005"
+      - timestamp: "2026-03-18T09:45:00Z"
+        entry_type: finding
+        content: "35% training speedup confirmed. But val_bpb degraded by 3.2% — above 2% threshold."
+      - timestamp: "2026-03-18T10:00:00Z"
+        entry_type: pivot
+        content: "Pivoting to hybrid attention: linear for early layers, standard for final 2 layers"
+    retention:
+      keep_sandbox_days: 90
+      keep_archive_days: 365
+      compress_after_days: 30
+    started_at: "2026-03-18T09:00:00Z"
+    ended_at: null
+    archived_at: null
+    duration_hours: null
+    review_summary: null
+
+  completed_flowstate:
+    id: "flowstate_20260315_001"
+    title: "Flash Attention 3 vs standard attention benchmark"
+    hypothesis: "FA3 provides > 20% throughput improvement with no quality loss"
+    initiated_by: crew
+    status: archived
+    sandbox_knowledge:
+      entries:
+        - id: 1
+          insight: "FA3 provides 28% throughput improvement at DEPTH=8 with zero val_bpb change"
+          category: infrastructure
+          confidence: very_high
+          sandbox_only: false  # Was promoted
+          promotion_status: promoted
+      total_entries: 1
+      promoted_count: 1
+    experiments:
+      total_run: 4
+      successful: 4
+      failed: 0
+    exploration_log:
+      - timestamp: "2026-03-15T14:00:00Z"
+        entry_type: hypothesis
+        content: "FA3 should be faster — but we've never benchmarked it"
+      - timestamp: "2026-03-15T16:30:00Z"
+        entry_type: insight
+        content: "28% throughput gain confirmed across 4 experiments. Hypothesis confirmed."
+    retention:
+      keep_sandbox_days: 90
+      keep_archive_days: 365
+      compress_after_days: 30
+    started_at: "2026-03-15T14:00:00Z"
+    ended_at: "2026-03-15T18:00:00Z"
+    archived_at: "2026-03-16T02:00:00Z"
+    duration_hours: 4.0
+    review_summary:
+      reviewer: crew
+      verdict: breakthrough
+      key_findings:
+        - "FA3 provides 28% throughput improvement with zero quality loss"
+        - "FA3 is now the default attention implementation"
+      lessons_learned:
+        - "Benchmark assumptions before accepting defaults — we were leaving 28% on the table"
+      follow_up_tasks:
+        - title: "Update all profiles to use FA3 by default"
+          reason: "28% free speedup — should be default everywhere"
+          priority: 2

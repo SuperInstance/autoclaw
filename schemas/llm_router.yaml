@@ -1,0 +1,592 @@
+# ============================================================================
+# LLM ROUTER SCHEMA (CascadeRouter Pattern)
+# ============================================================================
+# Intelligent routing of LLM calls across local and cloud backends.
+#
+# PROBLEM: The crew uses LLMs constantly — for reasoning, generation, scoring,
+# and synthesis. Naively calling the most capable model for every task is:
+#   - Expensive (GPT-4 for a simple classification is wasteful)
+#   - Slow (large models have higher latency)
+#   - Fragile (single API failure = crew stops)
+#
+# SOLUTION: CascadeRouter. Route each LLM call to the cheapest/fastest model
+# that can handle it. Fall back to more capable models only when needed.
+# Maintain multiple backends so any single failure doesn't stop the crew.
+#
+# ROUTING STRATEGY:
+#   1. Classify the request (complexity, latency requirement, cost budget)
+#   2. Select the cheapest backend that meets requirements
+#   3. If that backend fails or returns low-confidence output → escalate
+#   4. Log routing decisions for cost tracking and optimization
+#
+# INSPIRED BY: SuperInstance/CascadeRouter patterns (cost optimization,
+# fallback resilience, confidence-based escalation)
+#
+# IMPLEMENTATION NOTES:
+# - Router lives in crew/llm/router.py
+# - Backend configs in data/config.yaml under llm.backends
+# - Routing decisions logged to data/llm_routing.log
+# - Cost tracking integrated with Cloudflare credit manager
+# ============================================================================
+
+llm_backend:
+  id:
+    type: string
+    description: "Unique backend identifier"
+    example: "local_mistral_7b"
+
+  type:
+    type: enum
+    values:
+      - local_gguf      # llama.cpp with GGUF model (on-device)
+      - local_vllm      # vLLM server (on-device, higher throughput)
+      - cloudflare_ai   # Cloudflare Workers AI (free tier)
+      - anthropic_api   # Anthropic Claude API
+      - openai_api      # OpenAI GPT API
+      - ollama          # Ollama local server
+      - custom_api      # Any OpenAI-compatible API
+    description: "Backend type determines how calls are made"
+
+  model_id:
+    type: string
+    description: "Model identifier (path for local, model name for API)"
+    example: "mistral-7b-instruct-v0.2-gguf"
+
+  # --- Capabilities ---
+  capabilities:
+    type: object
+    fields:
+      context_window_tokens:
+        type: integer
+        description: "Maximum context window in tokens"
+        example: 32768
+
+      supports_function_calling:
+        type: boolean
+        default: false
+        description: "Whether this backend supports structured function/tool calls"
+
+      supports_streaming:
+        type: boolean
+        default: true
+
+      max_output_tokens:
+        type: integer
+        nullable: true
+        description: "Maximum tokens in a single response (null = model limit)"
+
+      languages:
+        type: list
+        items:
+          type: string
+        default: ["en"]
+        description: "Languages this model handles well"
+
+  # --- Performance Profile ---
+  performance:
+    type: object
+    fields:
+      avg_tokens_per_second:
+        type: float
+        nullable: true
+        description: "Measured throughput (tokens/sec). Null = not yet measured."
+
+      avg_latency_ms:
+        type: float
+        nullable: true
+        description: "Average time to first token (ms)"
+
+      quality_tier:
+        type: enum
+        values:
+          - tier_1  # Best quality (GPT-4, Claude Opus, Llama-70B)
+          - tier_2  # Good quality (Claude Haiku, Mistral-7B, Llama-8B)
+          - tier_3  # Fast/cheap (TinyLlama, Phi-2, CF Workers AI small)
+        description: |
+          Subjective quality tier. Used for routing decisions.
+          Tier 3 handles simple tasks; tier 1 handles complex reasoning.
+
+  # --- Cost ---
+  cost:
+    type: object
+    fields:
+      cost_per_1k_input_tokens:
+        type: float
+        default: 0.0
+        description: "USD per 1000 input tokens. 0.0 for local/free backends."
+
+      cost_per_1k_output_tokens:
+        type: float
+        default: 0.0
+
+      uses_cloudflare_credits:
+        type: boolean
+        default: false
+        description: "If true, calls consume Cloudflare Workers AI neurons"
+
+      daily_limit:
+        type: integer
+        nullable: true
+        description: "Maximum calls per day (for rate-limited free tiers)"
+
+  # --- Health ---
+  health:
+    type: object
+    fields:
+      status:
+        type: enum
+        values:
+          - healthy     # Responding normally
+          - degraded    # Responding but slow or with errors
+          - unavailable # Not responding
+          - disabled    # Manually disabled
+        default: healthy
+
+      last_checked:
+        type: datetime
+        nullable: true
+
+      consecutive_failures:
+        type: integer
+        default: 0
+
+      last_error:
+        type: string
+        nullable: true
+
+  enabled:
+    type: boolean
+    default: true
+
+# ============================================================================
+# ROUTING RULE SCHEMA
+# ============================================================================
+# Rules determine which backend handles which type of request.
+# Rules are evaluated in priority order; first match wins.
+
+routing_rule:
+  id:
+    type: string
+    description: "Rule identifier"
+    example: "simple_classification"
+
+  priority:
+    type: integer
+    description: "Lower = evaluated first. First matching rule wins."
+    example: 10
+
+  # --- Conditions (all must match) ---
+  conditions:
+    type: object
+    description: "All conditions must be true for this rule to match"
+    fields:
+      task_type:
+        type: list
+        items:
+          type: enum
+          values:
+            - classification      # Binary or multi-class classification
+            - summarization       # Compress long text to short summary
+            - qa_generation       # Generate Q&A pairs from source
+            - instruction_gen     # Generate instruction-response pairs
+            - reasoning           # Multi-step reasoning, analysis
+            - code_generation     # Write or modify code
+            - fact_check          # Verify claims against sources
+            - embedding           # Generate vector embeddings
+            - synthesis           # Combine multiple sources
+            - planning            # Plan experiments or tasks
+        nullable: true
+        description: "Match if request is one of these task types (null = any)"
+
+      max_input_tokens:
+        type: integer
+        nullable: true
+        description: "Match if input is shorter than this (null = any length)"
+
+      requires_function_calling:
+        type: boolean
+        nullable: true
+        description: "Match if function calling is required (null = don't care)"
+
+      priority_level:
+        type: list
+        items:
+          type: enum
+          values: [critical, high, normal, low, background]
+        nullable: true
+        description: "Match if request priority is one of these (null = any)"
+
+      cloudflare_budget_ok:
+        type: boolean
+        nullable: true
+        description: "Match only if CF budget is available (null = don't care)"
+
+  # --- Action ---
+  backend_preference:
+    type: list
+    items:
+      type: string
+    description: |
+      Ordered list of backend IDs to try. Router tries each in order,
+      falling back to the next if the current backend fails or is unavailable.
+    example: ["local_mistral_7b", "cloudflare_ai", "anthropic_haiku"]
+
+  escalation_policy:
+    type: object
+    description: "When to escalate to a higher-quality backend"
+    fields:
+      on_low_confidence:
+        type: boolean
+        default: false
+        description: |
+          If the backend returns a confidence score below threshold,
+          retry with the next backend in preference list.
+
+      confidence_threshold:
+        type: float
+        default: 0.7
+        description: "Minimum acceptable confidence score (0.0-1.0)"
+
+      on_error:
+        type: boolean
+        default: true
+        description: "If backend returns an error, try next backend"
+
+      max_escalations:
+        type: integer
+        default: 2
+        description: "Maximum number of escalation steps before giving up"
+
+# ============================================================================
+# ROUTING REQUEST SCHEMA
+# ============================================================================
+# What the router receives when an agent needs an LLM call.
+
+routing_request:
+  request_id:
+    type: string
+    generated: true
+    description: "Unique request ID for logging and tracing"
+
+  requesting_agent:
+    type: string
+    description: "Agent ID making the request"
+    example: "teacher_1"
+
+  task_type:
+    type: enum
+    values:
+      - classification
+      - summarization
+      - qa_generation
+      - instruction_gen
+      - reasoning
+      - code_generation
+      - fact_check
+      - embedding
+      - synthesis
+      - planning
+    description: "Type of LLM task — used for routing rule matching"
+
+  prompt:
+    type: object
+    fields:
+      system:
+        type: string
+        nullable: true
+        description: "System prompt"
+      messages:
+        type: list
+        items:
+          type: object
+          fields:
+            role: {type: enum, values: [user, assistant]}
+            content: {type: string}
+      max_tokens:
+        type: integer
+        default: 1024
+
+  priority:
+    type: enum
+    values: [critical, high, normal, low, background]
+    default: normal
+
+  requires_function_calling:
+    type: boolean
+    default: false
+
+  min_quality_tier:
+    type: enum
+    values: [tier_1, tier_2, tier_3]
+    default: tier_3
+    description: "Minimum quality tier acceptable for this request"
+
+  cost_budget_usd:
+    type: float
+    nullable: true
+    description: "Maximum cost for this request. Router won't use backends exceeding this."
+
+  timeout_ms:
+    type: integer
+    default: 30000
+    description: "Maximum time to wait for response (ms)"
+
+# ============================================================================
+# ROUTING RESPONSE SCHEMA
+# ============================================================================
+
+routing_response:
+  request_id:
+    type: string
+    description: "Matches routing_request.request_id"
+
+  backend_used:
+    type: string
+    description: "Backend ID that produced the final response"
+
+  backends_attempted:
+    type: list
+    items:
+      type: object
+      fields:
+        backend_id: {type: string}
+        outcome:
+          type: enum
+          values: [success, error, timeout, low_confidence, skipped]
+        latency_ms: {type: float, nullable: true}
+        error_message: {type: string, nullable: true}
+    description: "All backends tried, in order"
+
+  response:
+    type: object
+    fields:
+      content:
+        type: string
+        description: "The LLM's response text"
+      confidence:
+        type: float
+        nullable: true
+        description: "Self-reported confidence (0.0-1.0), if available"
+      tokens_used:
+        type: object
+        fields:
+          input: {type: integer}
+          output: {type: integer}
+
+  cost_usd:
+    type: float
+    description: "Actual cost of this request (0.0 for local/free backends)"
+
+  total_latency_ms:
+    type: float
+    description: "Total time from request to response (including escalations)"
+
+  escalation_count:
+    type: integer
+    default: 0
+    description: "Number of times the router escalated to a higher-quality backend"
+
+  created_at:
+    type: datetime
+    generated: true
+
+# ============================================================================
+# DEFAULT ROUTING RULES
+# ============================================================================
+# These are the default rules. Override in data/config.yaml under llm.routing_rules.
+
+default_routing_rules:
+
+  - id: "embedding_generation"
+    priority: 5
+    conditions:
+      task_type: [embedding]
+    backend_preference: ["local_sentence_transformers", "cloudflare_ai"]
+    escalation_policy:
+      on_error: true
+      max_escalations: 1
+
+  - id: "simple_classification"
+    priority: 10
+    conditions:
+      task_type: [classification]
+      max_input_tokens: 2000
+    backend_preference: ["local_phi3_mini", "cloudflare_ai", "local_mistral_7b"]
+    escalation_policy:
+      on_low_confidence: true
+      confidence_threshold: 0.8
+      on_error: true
+      max_escalations: 2
+
+  - id: "bulk_generation_background"
+    priority: 20
+    conditions:
+      task_type: [qa_generation, instruction_gen]
+      priority_level: [background, low]
+    backend_preference: ["cloudflare_ai", "local_mistral_7b", "anthropic_haiku"]
+    escalation_policy:
+      on_error: true
+      max_escalations: 2
+
+  - id: "quality_generation_normal"
+    priority: 30
+    conditions:
+      task_type: [qa_generation, instruction_gen, summarization]
+      priority_level: [normal, high]
+    backend_preference: ["local_mistral_7b", "anthropic_haiku", "openai_gpt4o_mini"]
+    escalation_policy:
+      on_low_confidence: true
+      confidence_threshold: 0.7
+      on_error: true
+      max_escalations: 2
+
+  - id: "complex_reasoning"
+    priority: 40
+    conditions:
+      task_type: [reasoning, synthesis, planning, fact_check]
+    backend_preference: ["local_mistral_7b", "anthropic_haiku", "anthropic_sonnet"]
+    escalation_policy:
+      on_low_confidence: true
+      confidence_threshold: 0.75
+      on_error: true
+      max_escalations: 2
+
+  - id: "critical_reasoning"
+    priority: 50
+    conditions:
+      task_type: [reasoning, synthesis, planning]
+      priority_level: [critical]
+    backend_preference: ["anthropic_sonnet", "openai_gpt4o", "anthropic_haiku"]
+    escalation_policy:
+      on_error: true
+      max_escalations: 1
+
+  - id: "code_generation"
+    priority: 60
+    conditions:
+      task_type: [code_generation]
+    backend_preference: ["local_mistral_7b", "anthropic_haiku", "openai_gpt4o_mini"]
+    escalation_policy:
+      on_low_confidence: true
+      confidence_threshold: 0.8
+      on_error: true
+      max_escalations: 2
+
+  - id: "fallback_any"
+    priority: 999
+    conditions: {}  # Matches everything
+    backend_preference: ["local_mistral_7b", "cloudflare_ai", "anthropic_haiku"]
+    escalation_policy:
+      on_error: true
+      max_escalations: 2
+
+# ============================================================================
+# EXAMPLES
+# ============================================================================
+
+examples:
+  local_mistral_backend:
+    id: "local_mistral_7b"
+    type: local_gguf
+    model_id: "mistral-7b-instruct-v0.2-Q5_K_M.gguf"
+    capabilities:
+      context_window_tokens: 32768
+      supports_function_calling: false
+      supports_streaming: true
+      max_output_tokens: 4096
+      languages: ["en"]
+    performance:
+      avg_tokens_per_second: 18.5
+      avg_latency_ms: 450
+      quality_tier: tier_2
+    cost:
+      cost_per_1k_input_tokens: 0.0
+      cost_per_1k_output_tokens: 0.0
+      uses_cloudflare_credits: false
+      daily_limit: null
+    health:
+      status: healthy
+      last_checked: "2026-03-18T14:00:00Z"
+      consecutive_failures: 0
+    enabled: true
+
+  cloudflare_ai_backend:
+    id: "cloudflare_ai"
+    type: cloudflare_ai
+    model_id: "@cf/mistral/mistral-7b-instruct-v0.1"
+    capabilities:
+      context_window_tokens: 8192
+      supports_function_calling: false
+      supports_streaming: false
+      max_output_tokens: 1024
+    performance:
+      avg_tokens_per_second: 45.0
+      avg_latency_ms: 800
+      quality_tier: tier_2
+    cost:
+      cost_per_1k_input_tokens: 0.0
+      cost_per_1k_output_tokens: 0.0
+      uses_cloudflare_credits: true
+      daily_limit: 10000  # neurons/day
+    health:
+      status: healthy
+      last_checked: "2026-03-18T14:00:00Z"
+      consecutive_failures: 0
+    enabled: true
+
+  anthropic_haiku_backend:
+    id: "anthropic_haiku"
+    type: anthropic_api
+    model_id: "claude-haiku-4-5-20251001"
+    capabilities:
+      context_window_tokens: 200000
+      supports_function_calling: true
+      supports_streaming: true
+      max_output_tokens: 8192
+    performance:
+      avg_tokens_per_second: 120.0
+      avg_latency_ms: 600
+      quality_tier: tier_2
+    cost:
+      cost_per_1k_input_tokens: 0.00025
+      cost_per_1k_output_tokens: 0.00125
+      uses_cloudflare_credits: false
+    health:
+      status: healthy
+      last_checked: "2026-03-18T14:00:00Z"
+      consecutive_failures: 0
+    enabled: true
+
+  routing_request_example:
+    request_id: "req_20260318_142301_001"
+    requesting_agent: "teacher_1"
+    task_type: qa_generation
+    prompt:
+      system: "You are an expert at generating high-quality Q&A pairs for ML training."
+      messages:
+        - role: user
+          content: "Generate 5 Q&A pairs about learning rate warmup from this text: [...]"
+      max_tokens: 2048
+    priority: normal
+    requires_function_calling: false
+    min_quality_tier: tier_2
+    cost_budget_usd: 0.01
+    timeout_ms: 30000
+
+  routing_response_example:
+    request_id: "req_20260318_142301_001"
+    backend_used: "local_mistral_7b"
+    backends_attempted:
+      - backend_id: "local_mistral_7b"
+        outcome: success
+        latency_ms: 2340.0
+    response:
+      content: "Q1: Why does warmup prevent instability? A1: ..."
+      confidence: 0.82
+      tokens_used:
+        input: 512
+        output: 487
+    cost_usd: 0.0
+    total_latency_ms: 2340.0
+    escalation_count: 0
+    created_at: "2026-03-18T14:23:01Z"

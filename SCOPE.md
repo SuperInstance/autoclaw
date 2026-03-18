@@ -152,6 +152,63 @@ Visible in semantic knowledge graph
 
 ---
 
+## 🚧 Phase 5: Training Data Pipeline (Q2 2026, ~3 weeks)
+
+**Schema:** `schemas/training_data.yaml`
+
+The crew generates knowledge entries, but there's no defined path from knowledge → specialist model training. This phase closes that gap.
+
+**What to build:**
+- Teacher agent generates examples in 4 formats: Q&A pairs, instruction-response, dialogue, completion
+- Critic agent scores examples (quality_score, quality_flags)
+- Distiller agent curates and exports LoRA JSONL
+- `crew knowledge export-lora` CLI command
+- Curriculum learning support (difficulty levels: beginner → expert)
+
+**Dependencies:** Phase 4 (multi-agent swarm) complete
+
+---
+
+## 🚧 Phase 6: Infinite Context + Smart Routing (Q3 2026, ~4 weeks)
+
+**Schemas:** `schemas/context_handoff.yaml`, `schemas/llm_router.yaml`
+
+Long-running tasks (hours/days) lose their reasoning thread when context fills. Smart routing cuts API costs 80%+ by using local models for bulk work.
+
+**What to build:**
+- Context handoff system (Baton pattern) — auto-triggers at 75% context limit
+  - Captures: accomplishments, decisions, extracted skills, state snapshot, next-gen plan
+  - Decision Rationale Tree — full audit trail of why the crew made each choice
+- LLM router with cascade fallback: local → CF Workers AI → Anthropic
+  - Routing rules: embeddings → local, bulk generation → CF Workers AI, complex reasoning → Anthropic
+  - Confidence-based escalation: low-confidence output → retry with higher-quality backend
+- `crew handoffs list` and `crew handoffs resume` CLI commands
+
+**Dependencies:** Phase 5 complete
+
+---
+
+## 🚧 Phase 7: Adaptive Scheduling + Flowstate (Q3-Q4 2026, ~4 weeks)
+
+**Schemas:** `schemas/adaptive_scheduler.yaml`, `schemas/flowstate.yaml`
+
+The crew learns which configurations produce the best outcomes. Flowstate enables radical exploration without contaminating the primary knowledge graph.
+
+**What to build:**
+- Bayesian adaptive scheduler (Thompson Sampling) replacing simple priority queue
+  - Tracks which agent + model + capability combinations produce best outcomes
+  - Convergence detection — stops exploring arms that have stabilized
+  - Instructional delta tracking — weekly performance measurement; triggers study mode if crew plateaus
+- Flowstate mode:
+  - `crew flowstate start/end/review` CLI commands
+  - Sandbox knowledge graph (separate from primary)
+  - Promotion pipeline: sandbox → validation → primary graph
+  - Exploration log: hypotheses, experiments, findings, dead ends, pivots
+
+**Dependencies:** Phase 6 complete (need routing data to train the bandit)
+
+---
+
 ## 🔮 Long-term: Q4 2026 - 2027 (4+ months)
 
 ### Aspirational Features (Research Phase)
@@ -163,13 +220,18 @@ Auto-validate findings against constraint-theory determinism. Currently conceptu
 
 ---
 
-**2. Podcast Generation**
-Auto-generate podcast episodes from research findings. Requires:
-- Text-to-speech integration
-- Episode structure templates
-- Multi-agent narration synthesis
+**2. Audio/Podcast Layer (Later Phase or Separate Repo)**
+Auto-generate podcast episodes from research findings. The interactive podcast idea is genuinely valuable but belongs after the core research system is solid.
 
-**Timeline:** Q4 2026 estimate
+Requires:
+- Narrator agent (TTS via Cartesia or local TTS)
+- Audio segment schema linked to knowledge entries
+- Podcast script generation from knowledge graph
+- Optional: LiveKit integration for real-time interactive mode
+
+**Decision:** Build as a consumer of AutoClaw's knowledge API, not coupled to the core system.
+
+**Timeline:** Q4 2026+ (after Phases 5-7 complete)
 
 ---
 
@@ -232,10 +294,22 @@ If this was why you downloaded AutoResearch, we recommend:
 | Quarter | MVP Status | Extended Vision | Ready for |
 |---------|-----------|-----------------|-----------|
 | **Q1 2026 (now)** | 3.5/5 - Partial | 0/5 - Framework | Single-agent experiments |
-| **Q2 2026 (Apr-Jun)** | 4.5/5 - Solid | 2/5 - Partial | Multi-agent coordination |
-| **Q3 2026 (Jul-Sep)** | 4.5/5 - Solid | 3/5 - POC | Wiki integration (beta) |
-| **Q4 2026 (Oct-Dec)** | 5/5 - Complete | 4/5 - Feature-rich | Production deployment |
-| **2027** | 5/5 - Complete | 5/5 - Full vision | Enterprise-grade system |
+| **Q2 2026 (Apr-Jun)** | 4.5/5 - Solid | 2/5 - Partial | Multi-agent coordination + Training data pipeline |
+| **Q3 2026 (Jul-Sep)** | 4.5/5 - Solid | 3/5 - POC | Infinite context + Smart routing + Wiki integration (beta) |
+| **Q4 2026 (Oct-Dec)** | 5/5 - Complete | 4/5 - Feature-rich | Adaptive scheduling + Flowstate + Production deployment |
+| **2027** | 5/5 - Complete | 5/5 - Full vision | Audio/podcast layer + Enterprise-grade system |
+
+### New Schemas Added (March 2026)
+
+Five new schemas were added after a synthesis review comparing the existing plan against Claude Code's AIR/AutoClaw merger proposals. See [SYNTHESIS.md](SYNTHESIS.md) for the full gap analysis.
+
+| Schema | Phase | What it enables |
+|--------|-------|-----------------|
+| `schemas/training_data.yaml` | Phase 5 | Path from knowledge → specialist model training (LoRA) |
+| `schemas/context_handoff.yaml` | Phase 6 | Infinite-context operation via Baton pattern |
+| `schemas/llm_router.yaml` | Phase 6 | Intelligent LLM routing — cut API costs 80%+ |
+| `schemas/adaptive_scheduler.yaml` | Phase 7 | Crew learns which configurations produce best outcomes |
+| `schemas/flowstate.yaml` | Phase 7 | Radical exploration without contaminating primary knowledge |
 
 ---
 
