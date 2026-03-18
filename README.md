@@ -1,4 +1,4 @@
-# AutoCrew
+# AutoClaw
 
 **Autonomous multi-agent knowledge system. 24/7 crew of researchers, teachers, critics, and synthesizers building your knowledge base.**
 
@@ -6,7 +6,7 @@
 
 ## 🚀 Getting Started
 
-**New to AutoCrew?** Start here:
+**New to AutoClaw?** Start here:
 
 | Guide | Time | For |
 |-------|------|-----|
@@ -323,11 +323,11 @@ crew knowledge query --tag "ml" --export-lora dataset.jsonl
 
 ---
 
-## Why AutoCrew?
+## Why AutoClaw?
 
 ```mermaid
 graph TB
-    AC["AutoCrew"] -->|"🏠 Local-First"| LF["Every component<br/>has a fallback<br/>→ Works offline<br/>→ No surprise costs"]
+    AC["AutoClaw"] -->|"🏠 Local-First"| LF["Every component<br/>has a fallback<br/>→ Works offline<br/>→ No surprise costs"]
 
     AC -->|"🔗 Interpretable"| INT["Wiki + VectorDB<br/>Always traceable<br/>→ Know why<br/>→ Follow sources"]
 
