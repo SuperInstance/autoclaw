@@ -4,6 +4,7 @@ The scheduler manages the task board and decides what to work on next.
 It's intentionally simple: priority ordering with creation time as tiebreaker.
 """
 
+import threading
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -55,6 +56,9 @@ class Task:
     # Tags
     tags: List[str] = field(default_factory=list)
 
+    # Agent ownership (which agent in the swarm owns this task)
+    agent_id: Optional[str] = None
+
     def to_dict(self):
         """Convert to dict for YAML serialization."""
         data = asdict(self)
@@ -90,6 +94,7 @@ class Scheduler:
         self.tasks_dir = tasks_dir
         self.tasks: List[Task] = []
         self.next_id: int = 1
+        self._lock = threading.Lock()  # Thread-safety for multi-agent access
 
         # Create directory if it doesn't exist
         self.tasks_dir.mkdir(parents=True, exist_ok=True)
@@ -138,6 +143,27 @@ class Scheduler:
         # Sort by priority (ascending), then creation time (oldest first)
         queued.sort(key=lambda t: (t.priority, t.created_at))
         return queued[0]
+
+    def get_unowned_next(self, agent_id: Optional[str] = None) -> Optional[Task]:
+        """Return highest-priority queued task not owned by any other agent.
+
+        Used by multi-agent swarm so agents don't steal each other's tasks.
+
+        Args:
+            agent_id: This agent's ID (may claim tasks already assigned to it)
+
+        Returns: Task to work on, or None
+        """
+        with self._lock:
+            queued = [
+                t for t in self.tasks
+                if t.status == "queued"
+                and (t.agent_id is None or t.agent_id == agent_id)
+            ]
+            if not queued:
+                return None
+            queued.sort(key=lambda t: (t.priority, t.created_at))
+            return queued[0]
 
     def default_priority(self, task_type: str) -> int:
         """Get default priority for a task type."""
