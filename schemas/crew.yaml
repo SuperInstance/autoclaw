@@ -1,0 +1,401 @@
+# ============================================================================
+# CREW SCHEMA
+# ============================================================================
+# The crew is the autonomous GPU worker. In v1, there is ONE crew member per
+# GPU. Future versions may support multiple crew members on multi-GPU systems.
+#
+# The crew has:
+# - A current mode (what general activity it's doing)
+# - A current task (if working on something specific)
+# - A knowledge base (what it's learned from all experiments)
+# - A study queue (self-improvement topics)
+# - Capabilities (what it knows how to do)
+#
+# IMPLEMENTATION NOTES FOR HAIKU:
+# - Crew state is stored at data/crew/state.yaml
+# - Knowledge base at data/crew/knowledge.yaml
+# - Study queue at data/crew/study_queue.yaml
+# - State is persisted after every mode transition and every experiment
+# - On crash/restart, crew resumes from persisted state
+# ============================================================================
+
+crew:
+  # --- Identity ---
+  id:
+    type: string
+    default: "crew-001"
+    description: "Crew member identifier. For v1, always 'crew-001'."
+
+  name:
+    type: string
+    default: "Crew"
+    description: |
+      Optional human-friendly name. Captain can set this.
+      e.g., "Atlas", "Friday", "Bosun"
+
+  # --- Current State ---
+  mode:
+    type: enum
+    values:
+      - working       # Executing a task from the board
+      - reviewing     # Analyzing results, writing findings, planning
+      - maintaining   # Housekeeping: archiving, organizing, compacting
+      - studying      # Self-directed learning and exploration
+      - idle          # Nothing to do (should be rare/temporary)
+      - starting      # Daemon just started, loading state
+      - shutting_down # Graceful shutdown in progress
+    description: |
+      The crew's current high-level activity. Determines what the crew
+      is doing and what transitions are possible.
+
+      IMPORTANT: "idle" should almost never happen. If the crew is idle,
+      it should immediately transition to studying or maintaining. Idle
+      means the crew failed to find productive work, which is a bug.
+
+    transitions:
+      starting:      [working, reviewing, maintaining, studying, idle]
+      working:       [reviewing, working, maintaining, shutting_down]
+      reviewing:     [working, maintaining, studying, idle, shutting_down]
+      maintaining:   [working, studying, idle, shutting_down]
+      studying:      [working, maintaining, shutting_down]
+      idle:          [working, maintaining, studying, shutting_down]
+      shutting_down: []  # Terminal
+
+  current_task:
+    type: object
+    nullable: true
+    description: "The task currently being worked on"
+    fields:
+      task_id:
+        type: integer
+      started_at:
+        type: datetime
+      progress:
+        type: object
+        fields:
+          experiments_done:
+            type: integer
+          experiments_total:
+            type: integer
+          current_experiment:
+            type: object
+            nullable: true
+            fields:
+              started_at:
+                type: datetime
+              parameters:
+                type: object
+                description: "Current experiment's parameter values"
+          best_so_far:
+            type: object
+            nullable: true
+            fields:
+              metric_value:
+                type: float
+              parameters:
+                type: object
+              commit_hash:
+                type: string
+
+  # --- Uptime & Metrics ---
+  uptime:
+    type: object
+    fields:
+      started_at:
+        type: datetime
+        description: "When the daemon was last started"
+      total_uptime_seconds:
+        type: float
+        description: "Cumulative uptime across all daemon starts"
+      restarts:
+        type: integer
+        default: 0
+        description: "Number of times daemon has been restarted"
+
+  metrics:
+    type: object
+    fields:
+      tasks_completed:
+        type: integer
+        default: 0
+        description: "Lifetime task completion count"
+      tasks_completed_today:
+        type: integer
+        default: 0
+        description: "Tasks completed since midnight UTC (resets daily)"
+      experiments_run:
+        type: integer
+        default: 0
+        description: "Lifetime experiment count"
+      experiments_run_today:
+        type: integer
+        default: 0
+      gpu_hours_used:
+        type: float
+        default: 0.0
+        description: "Cumulative GPU-hours"
+      api_tokens_used:
+        type: integer
+        default: 0
+        description: "Cumulative LLM API tokens"
+      findings_count:
+        type: integer
+        default: 0
+        description: "Number of notable findings recorded"
+      best_metric_ever:
+        type: float
+        nullable: true
+        description: "Best val_bpb ever achieved across all experiments"
+      best_metric_commit:
+        type: string
+        nullable: true
+        description: "Git commit hash of best-ever experiment"
+
+  # --- GPU Status ---
+  gpu:
+    type: object
+    description: "Real-time GPU status (updated every 30 seconds)"
+    fields:
+      name:
+        type: string
+        description: "GPU model name"
+        example: "NVIDIA H100 80GB"
+      utilization_pct:
+        type: float
+        description: "Current GPU utilization (0-100)"
+      memory_used_gb:
+        type: float
+      memory_total_gb:
+        type: float
+      temperature_c:
+        type: float
+      power_watts:
+        type: float
+
+  # --- Study State ---
+  study:
+    type: object
+    description: |
+      What the crew is studying when in study mode. The crew maintains
+      a queue of topics it thinks are worth investigating. Topics come from:
+      - Gaps in experiment history (parameter combos never tested)
+      - Interesting patterns noticed during reviews
+      - Papers and external info from triggers
+      - Captain's hints that suggest unexplored directions
+    fields:
+      current_topic:
+        type: object
+        nullable: true
+        fields:
+          title:
+            type: string
+          reason:
+            type: string
+            description: "Why the crew chose to study this"
+          started_at:
+            type: datetime
+          notes:
+            type: list
+            items:
+              type: string
+
+      queue:
+        type: list
+        items:
+          type: object
+          fields:
+            title:
+              type: string
+            reason:
+              type: string
+            estimated_experiments:
+              type: integer
+            priority:
+              type: integer
+              range: [1, 10]
+              description: "Study topics have their own priority within study mode"
+        description: |
+          Ordered list of study topics. Crew picks from top.
+          New topics can be added by the crew at any time.
+
+      completed:
+        type: list
+        items:
+          type: object
+          fields:
+            title:
+              type: string
+            summary:
+              type: string
+            experiments_run:
+              type: integer
+            findings:
+              type: list
+              items:
+                type: string
+            completed_at:
+              type: datetime
+
+  # --- Knowledge Base ---
+  # Separate file: data/crew/knowledge.yaml
+  # See schemas/knowledge.yaml for full schema
+  knowledge_summary:
+    type: object
+    description: "Quick-access summary of what the crew knows"
+    fields:
+      total_entries:
+        type: integer
+      topics:
+        type: list
+        items:
+          type: string
+        description: "List of knowledge topic areas"
+        example: ["learning-rate", "batch-size", "weight-decay", "architecture"]
+      last_updated:
+        type: datetime
+
+  # --- Decision State ---
+  # What the crew is thinking (for observability)
+  reasoning:
+    type: object
+    description: |
+      The crew's current reasoning state. Updated when the crew makes
+      a decision (what to work on next, how to approach a task, etc.).
+      This makes the crew's thinking transparent to the captain.
+    fields:
+      last_decision:
+        type: string
+        description: "What the crew last decided and why"
+        example: "Chose task #42 (LR sweep) over task #43 (paper review) because #42 has higher priority and direct experimental value"
+      next_planned_action:
+        type: string
+        description: "What the crew plans to do next"
+        example: "Run experiment 15/20 with LR=0.008, then compare all results"
+      concerns:
+        type: list
+        items:
+          type: string
+        description: "Things the crew is worried about or uncertain about"
+        example:
+          - "GPU temperature trending up — may need to throttle soon"
+          - "Last 3 experiments showed diminishing returns — may stop early"
+
+# --- CREW STATE MACHINE ---
+#
+# This is the main loop. The crew runs this forever:
+#
+#   ┌──────────┐
+#   │ STARTING │──── Load persisted state, check integrity
+#   └────┬─────┘
+#        │
+#        ▼
+#   ┌──────────────┐     has tasks?     ┌──────────┐
+#   │ CHECK_BOARD  │────── yes ────────▶│ WORKING  │
+#   └──────┬───────┘                    └────┬─────┘
+#          │ no                              │ task done
+#          ▼                                 ▼
+#   ┌──────────────┐     triggered?     ┌──────────┐
+#   │ CHECK_TRIGGERS│───── yes ────────▶│ REVIEWING│
+#   └──────┬───────┘                    └────┬─────┘
+#          │ no                              │ review done
+#          ▼                                 ▼
+#   ┌──────────────┐     needs work?    ┌────────────┐
+#   │ CHECK_MAINT  │────── yes ────────▶│ MAINTAINING│
+#   └──────┬───────┘                    └────┬───────┘
+#          │ no                              │ done
+#          ▼                                 ▼
+#   ┌──────────────┐                    back to CHECK_BOARD
+#   │  STUDYING    │
+#   └──────┬───────┘
+#          │ interrupted by higher-priority work
+#          ▼
+#     back to CHECK_BOARD
+#
+# INTERRUPT RULES:
+# - Captain's new task: Immediately pause current work, switch to new task
+# - Trigger fires: If priority > current, interrupt. Otherwise queue.
+# - GPU temperature > threshold: Throttle (reduce batch size or pause)
+# - Disk space < threshold: Switch to maintenance (archive old data)
+#
+# PERSISTENCE:
+# - State saved after every mode transition
+# - State saved after every experiment completion
+# - On crash: Resume from last saved state
+# - Active experiment's partial results are logged to run.log
+# - On resume: Check if last experiment completed; if not, re-run it
+
+# --- EXAMPLE CREW STATE ---
+
+example:
+  id: "crew-001"
+  name: "Atlas"
+  mode: working
+  current_task:
+    task_id: 42
+    started_at: "2026-03-18T10:35:00Z"
+    progress:
+      experiments_done: 14
+      experiments_total: 20
+      current_experiment:
+        started_at: "2026-03-18T11:45:00Z"
+        parameters:
+          learning_rate: 0.008
+          lr_schedule: cosine
+          warmup_steps: 100
+      best_so_far:
+        metric_value: 1.006
+        parameters:
+          learning_rate: 0.005
+          lr_schedule: cosine
+          warmup_steps: 100
+        commit_hash: "a3f2c1d"
+  uptime:
+    started_at: "2026-03-13T08:00:00Z"
+    total_uptime_seconds: 456840
+    restarts: 2
+  metrics:
+    tasks_completed: 41
+    tasks_completed_today: 7
+    experiments_run: 312
+    experiments_run_today: 14
+    gpu_hours_used: 89.3
+    api_tokens_used: 2340000
+    findings_count: 23
+    best_metric_ever: 0.994
+    best_metric_commit: "e7b3a01"
+  gpu:
+    name: "NVIDIA H100 80GB"
+    utilization_pct: 96.2
+    memory_used_gb: 41.3
+    memory_total_gb: 80.0
+    temperature_c: 68
+    power_watts: 350
+  study:
+    current_topic: null  # Not studying right now (working)
+    queue:
+      - title: "Does DEPTH interact with optimal LR?"
+        reason: "All LR experiments used DEPTH=8. No data on interaction."
+        estimated_experiments: 9
+        priority: 3
+      - title: "Flash Attention 3 vs standard attention throughput"
+        reason: "Using FA3 by default but never benchmarked advantage"
+        estimated_experiments: 4
+        priority: 5
+    completed:
+      - title: "Warmup steps sensitivity analysis"
+        summary: "100 steps is optimal for DEPTH=8. Below 50: instability. Above 200: wasted compute."
+        experiments_run: 8
+        findings:
+          - "Warmup of 100 steps is critical for stability at LR > 0.003"
+          - "Below 50 warmup steps, 40% of experiments diverge"
+        completed_at: "2026-03-17T22:30:00Z"
+  knowledge_summary:
+    total_entries: 23
+    topics: ["learning-rate", "batch-size", "warmup", "weight-decay", "cosine-annealing"]
+    last_updated: "2026-03-18T10:45:00Z"
+  reasoning:
+    last_decision: "Continuing LR sweep task #42. 14/20 done. Results consistent with captain's hypothesis."
+    next_planned_action: "Run experiment 15 with LR=0.008. If worse than 0.005, skip 0.01 and refine around 0.005."
+    concerns:
+      - "Diminishing returns after LR=0.005 — may recommend early stopping"
+      - "Disk space at 78% — schedule maintenance if reaches 85%"

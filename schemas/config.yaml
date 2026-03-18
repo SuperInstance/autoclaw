@@ -1,0 +1,442 @@
+# ============================================================================
+# CONFIG SCHEMA
+# ============================================================================
+# System-wide configuration. This is the single file the captain edits to
+# control crew behavior. Lives at data/config.yaml (user-editable) with
+# defaults at schemas/config.defaults.yaml (don't edit).
+#
+# Design principle: Sensible defaults everywhere. A blank config.yaml should
+# produce a working system. The captain only overrides what they care about.
+#
+# IMPLEMENTATION NOTES FOR HAIKU:
+# - Load defaults from schemas/config.defaults.yaml
+# - Overlay user's data/config.yaml on top
+# - Validate merged config at daemon startup
+# - Hot-reload: watch data/config.yaml for changes, apply without restart
+# - Config changes create a notification (type: status_change)
+# ============================================================================
+
+config:
+  # =========================================================================
+  # CREW IDENTITY
+  # =========================================================================
+  crew:
+    name:
+      type: string
+      default: "Crew"
+      description: "Name for the crew member. Shows in status and notifications."
+      example: "Atlas"
+
+    personality:
+      type: enum
+      values:
+        - concise       # Brief notes, minimal explanation
+        - balanced      # Standard detail level (default)
+        - verbose       # Detailed notes, extensive reasoning
+      default: balanced
+      description: |
+        How much the crew writes in notes, findings, and notifications.
+        Concise: "LR=0.005 best. 1.2% improvement."
+        Balanced: "LR=0.005 with cosine annealing gave 1.2% improvement over baseline."
+        Verbose: "After testing 20 configurations, LR=0.005 with cosine annealing
+                  produced the best result (val_bpb=1.006, 1.2% over baseline 1.018).
+                  This is consistent with prior finding #1 that..."
+
+  # =========================================================================
+  # LLM SERVICE (for crew reasoning)
+  # =========================================================================
+  llm:
+    provider:
+      type: enum
+      values: [openai, anthropic, ollama, vllm, custom]
+      default: anthropic
+      description: "Which LLM service the crew uses for reasoning and planning"
+
+    model:
+      type: string
+      default: "claude-haiku-4-5-20251001"
+      description: |
+        Model ID for crew reasoning. Use cheap/fast models for routine work.
+        The crew makes many API calls; cost matters.
+
+        Recommendations:
+          Budget: claude-haiku-4-5-20251001 or gpt-4o-mini (~$0.10/hour)
+          Standard: claude-sonnet-4-6 or gpt-4o (~$0.50/hour)
+          Premium: claude-opus-4-6 or gpt-4 (~$2/hour)
+
+        For local: "llama3:8b" (ollama) or model path (vllm)
+
+    api_key:
+      type: string
+      default: ""
+      description: |
+        API key. Can also be set via environment variable:
+          ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.
+        Env var takes precedence over config file.
+      sensitive: true
+
+    base_url:
+      type: string
+      nullable: true
+      description: |
+        Custom API endpoint. Required for ollama/vllm/custom.
+        Examples:
+          ollama: "http://localhost:11434/v1"
+          vllm:   "http://localhost:8000/v1"
+
+    max_tokens_per_minute:
+      type: integer
+      default: 10000
+      description: "Rate limit for API calls. Prevents runaway costs."
+
+    max_cost_per_day_usd:
+      type: float
+      default: 5.0
+      description: |
+        Maximum daily spend on LLM API. Crew pauses reasoning and switches
+        to pre-programmed behavior when limit reached. Set to 0 for unlimited.
+
+  # =========================================================================
+  # GPU & COMPUTE
+  # =========================================================================
+  gpu:
+    device:
+      type: string
+      default: "cuda:0"
+      description: "GPU device string. Usually 'cuda:0' for single GPU."
+
+    max_memory_gb:
+      type: float
+      nullable: true
+      description: |
+        Maximum GPU memory the crew can use. null = use all available.
+        Useful if sharing GPU with other processes.
+
+    temperature_throttle_c:
+      type: float
+      default: 85.0
+      description: "Reduce workload when GPU temp exceeds this. Set to 100 to disable."
+
+    temperature_shutdown_c:
+      type: float
+      default: 95.0
+      description: "Gracefully stop experiments when GPU temp exceeds this."
+
+  # =========================================================================
+  # EXPERIMENT SETTINGS
+  # =========================================================================
+  experiments:
+    time_budget_seconds:
+      type: integer
+      default: 300
+      description: "Wall-clock time per experiment. Default: 5 minutes."
+
+    max_concurrent:
+      type: integer
+      default: 1
+      description: "Max experiments running at once. Usually 1 for single GPU."
+
+    git_commit_each:
+      type: boolean
+      default: true
+      description: "Create a git commit for each experiment (for reproducibility)"
+
+    keep_checkpoints:
+      type: enum
+      values:
+        - all        # Keep every checkpoint (uses most disk)
+        - best_only  # Only keep checkpoint of best experiment per task
+        - none       # Don't save checkpoints (saves disk, loses models)
+      default: best_only
+
+    results_dir:
+      type: string
+      default: "data/experiments"
+      description: "Where experiment results are stored"
+
+    train_file:
+      type: string
+      default: "train.py"
+      description: "The file the crew modifies for experiments"
+
+    prepare_file:
+      type: string
+      default: "prepare.py"
+      description: "The data preparation file (crew does NOT modify this)"
+
+    success_metric:
+      type: string
+      default: "val_bpb"
+      description: "Primary metric. Lower is better."
+
+  # =========================================================================
+  # TASK BOARD
+  # =========================================================================
+  tasks:
+    auto_follow_ups:
+      type: boolean
+      default: true
+      description: |
+        Whether the crew automatically creates follow-up tasks from results.
+        If false, crew only suggests follow-ups in notifications.
+
+    max_follow_ups_per_task:
+      type: integer
+      default: 3
+      description: "Maximum follow-up tasks a single task can spawn"
+
+    max_queue_depth:
+      type: integer
+      default: 50
+      description: "Maximum tasks on the board. Oldest low-priority tasks pruned when full."
+
+    study_enabled:
+      type: boolean
+      default: true
+      description: |
+        Whether the crew can self-direct study tasks when the board is empty.
+        If false, crew goes idle when no explicit tasks remain.
+
+    study_max_experiments:
+      type: integer
+      default: 10
+      description: "Maximum experiments per self-directed study session"
+
+    maintenance_interval_hours:
+      type: integer
+      default: 24
+      description: "How often to run maintenance (archive, organize, compact)"
+
+  # =========================================================================
+  # TRIGGERS
+  # =========================================================================
+  triggers:
+    enabled:
+      type: boolean
+      default: true
+      description: "Master switch for all triggers"
+
+    webhook_port:
+      type: integer
+      default: 8420
+      description: "HTTP port for webhook triggers. Set to 0 to disable."
+
+    webhook_host:
+      type: string
+      default: "127.0.0.1"
+      description: "Bind address for webhook server. Use 0.0.0.0 for external access."
+
+    webhook_secret:
+      type: string
+      default: ""
+      description: "Shared secret for webhook authentication (HMAC-SHA256)"
+      sensitive: true
+
+  # =========================================================================
+  # NOTIFICATIONS
+  # =========================================================================
+  notifications:
+    # What to notify about
+    notify_on_task_complete:
+      type: boolean
+      default: true
+    notify_on_finding:
+      type: boolean
+      default: true
+    notify_on_milestone:
+      type: boolean
+      default: true
+    notify_on_alert:
+      type: boolean
+      default: true  # Can't disable — safety critical
+    notify_on_study_insight:
+      type: boolean
+      default: true
+
+    # External delivery
+    external_channels:
+      type: list
+      items:
+        type: object
+        fields:
+          type:
+            type: enum
+            values: [webhook, email, command, file]
+          min_severity:
+            type: enum
+            values: [info, important, urgent]
+            default: important
+            description: "Only deliver notifications at this severity or higher"
+
+          # For type: webhook
+          url:
+            type: string
+            nullable: true
+          headers:
+            type: object
+            nullable: true
+
+          # For type: email
+          smtp_host:
+            type: string
+            nullable: true
+          smtp_port:
+            type: integer
+            nullable: true
+          to_address:
+            type: string
+            nullable: true
+          from_address:
+            type: string
+            nullable: true
+
+          # For type: command
+          command:
+            type: string
+            nullable: true
+            description: "Shell command. Notification JSON piped to stdin."
+            example: "ntfy publish crew-alerts"
+
+          # For type: file
+          path:
+            type: string
+            nullable: true
+            description: "Append notifications to this file"
+      default: []
+
+    # Retention
+    max_notifications:
+      type: integer
+      default: 1000
+      description: "Max stored notifications. Oldest archived when exceeded."
+
+    archive_after_days:
+      type: integer
+      default: 30
+
+  # =========================================================================
+  # STORAGE
+  # =========================================================================
+  storage:
+    data_dir:
+      type: string
+      default: "data"
+      description: |
+        Root directory for all crew data:
+          data/tasks/          — task files
+          data/crew/           — crew state, knowledge
+          data/experiments/    — experiment results
+          data/triggers/       — trigger configs
+          data/notifications/  — notification history
+          data/archive/        — archived old data
+
+    disk_usage_warn_pct:
+      type: float
+      default: 85.0
+      description: "Warn when disk usage exceeds this percentage"
+
+    disk_usage_critical_pct:
+      type: float
+      default: 95.0
+      description: "Stop experiments and force archive when disk exceeds this"
+
+    archive_experiments_after_days:
+      type: integer
+      default: 14
+      description: "Move experiment data to archive after this many days"
+
+    delete_archives_after_days:
+      type: integer
+      default: 180
+      description: "Permanently delete archived data after this many days. 0 = never."
+
+  # =========================================================================
+  # DAEMON
+  # =========================================================================
+  daemon:
+    pid_file:
+      type: string
+      default: "data/crew.pid"
+      description: "PID file for the daemon process"
+
+    log_file:
+      type: string
+      default: "data/crew.log"
+      description: "Main daemon log file"
+
+    log_level:
+      type: enum
+      values: [debug, info, warning, error]
+      default: info
+
+    heartbeat_interval_seconds:
+      type: integer
+      default: 30
+      description: "How often to update GPU stats and persist state"
+
+    graceful_shutdown_timeout_seconds:
+      type: integer
+      default: 60
+      description: "How long to wait for current experiment to finish on shutdown"
+
+    auto_restart:
+      type: boolean
+      default: true
+      description: "Restart daemon automatically if it crashes"
+
+    max_restarts_per_hour:
+      type: integer
+      default: 5
+      description: "Stop restarting if crashes exceed this rate (prevents crash loops)"
+
+# --- MINIMAL CONFIG EXAMPLE ---
+# This is all you need in data/config.yaml to get started:
+#
+#   llm:
+#     provider: anthropic
+#     api_key: sk-ant-your-key-here
+#
+# Everything else uses sensible defaults.
+
+# --- FULL CONFIG EXAMPLE ---
+example:
+  crew:
+    name: "Atlas"
+    personality: balanced
+  llm:
+    provider: anthropic
+    model: "claude-haiku-4-5-20251001"
+    api_key: ""  # Set via ANTHROPIC_API_KEY env var
+    max_tokens_per_minute: 10000
+    max_cost_per_day_usd: 5.0
+  gpu:
+    device: "cuda:0"
+    max_memory_gb: null
+    temperature_throttle_c: 85.0
+    temperature_shutdown_c: 95.0
+  experiments:
+    time_budget_seconds: 300
+    git_commit_each: true
+    keep_checkpoints: best_only
+    success_metric: val_bpb
+  tasks:
+    auto_follow_ups: true
+    max_follow_ups_per_task: 3
+    study_enabled: true
+    study_max_experiments: 10
+  triggers:
+    enabled: true
+    webhook_port: 8420
+  notifications:
+    notify_on_task_complete: true
+    notify_on_finding: true
+    external_channels:
+      - type: command
+        min_severity: important
+        command: "ntfy publish crew-alerts"
+  storage:
+    data_dir: "data"
+    archive_experiments_after_days: 14
+  daemon:
+    log_level: info
+    auto_restart: true

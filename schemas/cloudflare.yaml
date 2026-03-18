@@ -1,0 +1,450 @@
+# ============================================================================
+# CLOUDFLARE FREE TIER SCHEMA
+# ============================================================================
+# Manages Cloudflare free tier credits across all services.
+#
+# Free tier strategy: "Never waste a neuron"
+#   - Track daily/monthly usage per service
+#   - Schedule high-priority work first
+#   - At end-of-day, burn remaining credits on lower-priority batch work
+#   - Pace instruction generation to maximize teacher throughput before reset
+#   - Alert when approaching limits so agents adjust behavior
+#
+# IMPLEMENTATION NOTES (crew/cloudflare/):
+# - credits.py: Budget tracker, gaming strategy, end-of-day scheduler
+# - client.py:  REST API wrapper (auth, retry, error handling)
+# - workers_ai.py: CF Workers AI model calls
+# - d1.py:      D1 SQL database operations
+# - r2.py:      R2 object storage (put/get/delete/list)
+# - kv.py:      KV store fast operations
+#
+# Configuration lives at data/config.yaml under `cloudflare:` key.
+# Usage counters saved to data/cloudflare/usage.yaml (reset daily/monthly).
+# ============================================================================
+
+cloudflare_config:
+
+  # =========================================================================
+  # CREDENTIALS
+  # =========================================================================
+  account_id:
+    type: string
+    default: ""
+    description: "Cloudflare Account ID (from CF dashboard)"
+    sensitive: false  # Not secret, but necessary
+
+  api_token:
+    type: string
+    default: ""
+    description: |
+      Cloudflare API Token with these permissions:
+        - Workers AI: Use
+        - D1: Read + Write
+        - R2: Object Read + Write
+        - KV: Read + Write
+      Can also be set via CF_API_TOKEN env var.
+    sensitive: true
+
+  # =========================================================================
+  # ENABLE/DISABLE SERVICES
+  # =========================================================================
+  enabled:
+    type: boolean
+    default: false
+    description: "Master switch. System works fully without Cloudflare."
+
+  services:
+    type: object
+    fields:
+      workers_ai:
+        type: boolean
+        default: true
+        description: "Use CF Workers AI for inference"
+      d1:
+        type: boolean
+        default: true
+        description: "Use CF D1 for warm knowledge storage"
+      r2:
+        type: boolean
+        default: true
+        description: "Use CF R2 for cold storage"
+      kv:
+        type: boolean
+        default: true
+        description: "Use CF KV for fast counters and lookups"
+
+  # =========================================================================
+  # SERVICE LIMITS (free tier as of 2025)
+  # Update these if Cloudflare changes free tier limits.
+  # =========================================================================
+  limits:
+    type: object
+    description: "Free tier limits. Used by credit manager."
+    fields:
+
+      workers_ai:
+        neurons_per_day:
+          type: integer
+          default: 10000
+          description: "Neurons consumed per request varies by model size"
+        # Approximate neuron costs by model category:
+        # text_generation (7B): ~450 neurons/1k tokens
+        # text_generation (1B): ~100 neurons/1k tokens
+        # embeddings:           ~1 neuron/input
+        # image_generation:     ~3000 neurons/image (varies)
+        # audio_transcription:  ~10 neurons/second
+
+      d1:
+        reads_per_day:
+          type: integer
+          default: 25000000   # 25M
+        writes_per_day:
+          type: integer
+          default: 50000       # 50k
+        storage_gb:
+          type: float
+          default: 5.0
+
+      r2:
+        storage_gb:
+          type: float
+          default: 10.0
+        class_a_ops_per_month:
+          type: integer
+          default: 1000000     # 1M (PUT, DELETE, LIST)
+        class_b_ops_per_month:
+          type: integer
+          default: 10000000    # 10M (GET)
+
+      kv:
+        reads_per_day:
+          type: integer
+          default: 100000      # 100k
+        writes_per_day:
+          type: integer
+          default: 1000        # 1k
+        deletes_per_day:
+          type: integer
+          default: 1000        # 1k
+        storage_gb:
+          type: float
+          default: 1.0
+
+  # =========================================================================
+  # CREDIT GAMING STRATEGY
+  # =========================================================================
+  credit_strategy:
+    type: object
+    description: "How to schedule work to maximize free tier value"
+
+    daily_reset_utc_hour:
+      type: integer
+      default: 0
+      description: "Hour (UTC) when daily limits reset (midnight UTC)"
+
+    monthly_reset_day:
+      type: integer
+      default: 1
+      description: "Day of month when monthly limits reset"
+
+    thresholds:
+      type: object
+      description: "At these usage percentages, behavior changes"
+      fields:
+        warn:
+          type: float
+          default: 0.70
+          description: "Send credit_alert message to agents at 70% usage"
+        throttle:
+          type: float
+          default: 0.85
+          description: "Only allow priority < 5 tasks at 85%"
+        critical:
+          type: float
+          default: 0.95
+          description: "Only allow priority < 3 (critical) at 95%"
+        end_of_day_trigger:
+          type: float
+          default: 0.10
+          description: "If < 10% credits remain AND hour >= 23, trigger batch burn"
+
+    end_of_day_batch:
+      type: object
+      description: |
+        What to do with remaining credits at end-of-day (23:45-00:00 UTC).
+        Credits reset at midnight so use them before they expire.
+      fields:
+        enabled:
+          type: boolean
+          default: true
+        workers_ai_tasks:
+          type: list
+          items:
+            type: enum
+            values:
+              - batch_instruction_generation  # Use teacher agent, burn neurons on Q&A
+              - image_generation              # Generate training images if requested
+              - audio_transcription           # Transcribe any queued audio
+              - embedding_batch              # Generate embeddings for new knowledge
+              - summarize_old_research       # Compress old research into summaries
+          default:
+            - batch_instruction_generation
+            - embedding_batch
+            - summarize_old_research
+
+    teacher_pacing:
+      type: object
+      description: |
+        When running as a teacher for local model training, pace instruction
+        generation to end just before daily reset (maximize throughput without
+        wasting credits by stopping early or overrunning).
+      fields:
+        enabled:
+          type: boolean
+          default: true
+        target_completion_minutes_before_reset:
+          type: integer
+          default: 5
+          description: "Aim to use last neuron 5 minutes before midnight UTC"
+        smooth_distribution:
+          type: boolean
+          default: true
+          description: "Spread usage evenly throughout the day (not all at start)"
+        reserve_pct:
+          type: float
+          default: 0.10
+          description: "Keep 10% in reserve for urgent/critical tasks"
+
+  # =========================================================================
+  # WORKERS AI MODEL CATALOG
+  # =========================================================================
+  workers_ai_models:
+    description: |
+      Available models on Workers AI. Listed with approximate neuron cost.
+      Prefer smaller models for bulk work, larger for quality-critical tasks.
+
+    text_generation:
+      fast:
+        model_id: "@cf/meta/llama-3.1-8b-instruct"
+        neurons_per_1k_tokens: 100
+        quality: medium
+        use_for: [bulk_qa, simple_summaries, filtering]
+
+      balanced:
+        model_id: "@cf/meta/llama-3.2-11b-vision-instruct"
+        neurons_per_1k_tokens: 150
+        quality: high
+        use_for: [qa_generation, instruction_tuning, research_synthesis]
+
+      quality:
+        model_id: "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+        neurons_per_1k_tokens: 450
+        quality: very_high
+        use_for: [complex_reasoning, critic_challenges, final_synthesis]
+
+    embedding:
+      model_id: "@cf/baai/bge-base-en-v1.5"
+      neurons_per_input: 1
+      dimensions: 768
+      use_for: [knowledge_embedding, similarity_search]
+
+    image_generation:
+      model_id: "@cf/black-forest-labs/flux-1-schnell"
+      neurons_per_image: 3000
+      use_for: [training_image_gen, visualization]
+
+  # =========================================================================
+  # D1 DATABASE SCHEMA (for knowledge warm store)
+  # =========================================================================
+  d1_schema:
+    description: "SQL tables in CF D1 for warm knowledge storage"
+
+    tables:
+      knowledge_entries: |
+        CREATE TABLE IF NOT EXISTS knowledge_entries (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          insight TEXT NOT NULL,
+          category TEXT NOT NULL,
+          tags TEXT,                 -- JSON array
+          confidence TEXT NOT NULL,
+          status TEXT DEFAULT 'active',
+          evidence TEXT,             -- JSON object
+          conditions TEXT,
+          created_at TEXT NOT NULL,
+          last_validated TEXT,
+          tier TEXT DEFAULT 'warm',
+          embedding_vec BLOB,        -- Serialized float array
+          source_agent TEXT,
+          quality_score REAL DEFAULT 0.5
+        );
+
+      training_examples: |
+        CREATE TABLE IF NOT EXISTS training_examples (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          format TEXT NOT NULL,
+          prompt TEXT NOT NULL,
+          completion TEXT NOT NULL,
+          source_topic TEXT,
+          quality_score REAL DEFAULT 0.5,
+          dataset_tag TEXT,
+          language_model TEXT,
+          created_at TEXT NOT NULL,
+          reviewed_by TEXT,          -- critic agent ID that reviewed
+          accepted BOOLEAN DEFAULT 1
+        );
+
+      credit_usage: |
+        CREATE TABLE IF NOT EXISTS credit_usage (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          service TEXT NOT NULL,
+          operation TEXT NOT NULL,
+          units_used INTEGER NOT NULL,
+          date TEXT NOT NULL,
+          agent_id TEXT,
+          purpose TEXT
+        );
+
+      agent_messages: |
+        CREATE TABLE IF NOT EXISTS agent_messages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          from_agent TEXT NOT NULL,
+          to_agent TEXT NOT NULL,
+          type TEXT NOT NULL,
+          priority INTEGER DEFAULT 5,
+          payload TEXT,              -- JSON
+          status TEXT DEFAULT 'pending',
+          created_at TEXT NOT NULL,
+          delivered_at TEXT,
+          completed_at TEXT,
+          expires_at TEXT,
+          parent_message_id INTEGER
+        );
+
+  # =========================================================================
+  # R2 STORAGE STRUCTURE
+  # =========================================================================
+  r2_structure:
+    bucket_name: "autocrew-cold"
+    description: "Cold knowledge storage in R2"
+
+    prefix_conventions:
+      knowledge_cold: "knowledge/cold/{year}/{month}/{entry_id}.json.gz"
+      knowledge_archive: "knowledge/archive/{year}/{entry_id}.json.gz"
+      training_datasets: "training/{dataset_tag}/{split}.jsonl.gz"
+      experiment_results: "experiments/{date}/{exp_id}/results.json.gz"
+      weekly_summaries: "summaries/weekly/{year}-W{week}.md"
+      monthly_reports: "summaries/monthly/{year}-{month}.md"
+
+    class_a_operations: [put, delete, list]
+    class_b_operations: [get, head]
+
+# ============================================================================
+# USAGE TRACKING STATE (data/cloudflare/usage.yaml)
+# ============================================================================
+# This file is written by the credit tracker, not the config file.
+# Shown here for documentation purposes.
+
+usage_state:
+  date:
+    type: string
+    description: "Current UTC date (YYYY-MM-DD)"
+
+  month:
+    type: string
+    description: "Current UTC month (YYYY-MM)"
+
+  workers_ai:
+    neurons_used_today:
+      type: integer
+      default: 0
+    neurons_limit_today:
+      type: integer
+      description: "From config limits"
+    last_call_at:
+      type: datetime
+      nullable: true
+
+  d1:
+    reads_today:
+      type: integer
+      default: 0
+    writes_today:
+      type: integer
+      default: 0
+    storage_used_gb:
+      type: float
+      default: 0.0
+    last_sync_at:
+      type: datetime
+      nullable: true
+
+  r2:
+    class_a_ops_this_month:
+      type: integer
+      default: 0
+    class_b_ops_this_month:
+      type: integer
+      default: 0
+    storage_used_gb:
+      type: float
+      default: 0.0
+
+  kv:
+    reads_today:
+      type: integer
+      default: 0
+    writes_today:
+      type: integer
+      default: 0
+    deletes_today:
+      type: integer
+      default: 0
+
+  end_of_day_batch_ran:
+    type: boolean
+    default: false
+    description: "Whether end-of-day batch ran today"
+
+# ============================================================================
+# EXAMPLES
+# ============================================================================
+
+examples:
+  minimal_config:
+    account_id: "abc123"
+    api_token: ""    # Set via CF_API_TOKEN env var
+    enabled: true
+    services:
+      workers_ai: true
+      d1: true
+      r2: false      # Disable R2 to stay in 10GB limit
+      kv: true
+
+  usage_at_23h00:
+    # At 23:00 UTC, end-of-day gaming kicks in
+    # workers_ai: 7800/10000 neurons used (78%)
+    # 2200 neurons remain → batch teacher generation
+    workers_ai:
+      neurons_used_today: 7800
+      neurons_limit_today: 10000
+      last_call_at: "2026-03-18T23:00:15Z"
+    end_of_day_batch_ran: false
+
+  typical_day_schedule:
+    # How a typical day's neuron budget is spent:
+    morning:
+      time: "06:00-12:00 UTC"
+      usage_pct: 0.30
+      activities: [research_agent_summaries, embedding_generation]
+    afternoon:
+      time: "12:00-20:00 UTC"
+      usage_pct: 0.40
+      activities: [teacher_instruction_generation, critic_quality_checks]
+    evening:
+      time: "20:00-23:45 UTC"
+      usage_pct: 0.20
+      activities: [distiller_synthesis, weekly_summaries]
+    end_of_day:
+      time: "23:45-00:00 UTC"
+      usage_pct: 0.10
+      activities: [batch_instruction_burn, embedding_batch]
