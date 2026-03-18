@@ -40,58 +40,59 @@ training_example:
   content:
     type: object
     description: "Format-specific content. Fields depend on 'format'."
+    fields:
 
-    # For qa_pair:
-    question:
-      type: string
-      nullable: true
-      description: "The question posed (qa_pair format)"
-      example: "Why does learning rate warmup prevent early training instability?"
+      # For qa_pair:
+      question:
+        type: string
+        nullable: true
+        description: "The question posed (qa_pair format)"
+        example: "Why does learning rate warmup prevent early training instability?"
 
-    answer:
-      type: string
-      nullable: true
-      description: "The correct answer (qa_pair format)"
-      example: "During warmup, the learning rate starts near zero and increases gradually..."
+      answer:
+        type: string
+        nullable: true
+        description: "The correct answer (qa_pair format)"
+        example: "During warmup, the learning rate starts near zero and increases gradually..."
 
-    # For instruction_response:
-    instruction:
-      type: string
-      nullable: true
-      description: "The task instruction (instruction_response format)"
-      example: "Explain the relationship between batch size and optimal learning rate."
+      # For instruction_response:
+      instruction:
+        type: string
+        nullable: true
+        description: "The task instruction (instruction_response format)"
+        example: "Explain the relationship between batch size and optimal learning rate."
 
-    response:
-      type: string
-      nullable: true
-      description: "The expected response (instruction_response format)"
+      response:
+        type: string
+        nullable: true
+        description: "The expected response (instruction_response format)"
 
-    # For dialogue:
-    turns:
-      type: list
-      nullable: true
-      items:
-        type: object
-        fields:
-          role:
-            type: enum
-            values: [user, assistant, system]
-            description: "Speaker role in the conversation turn"
-          content:
-            type: string
-            description: "Text content of this conversation turn"
-      description: "Ordered conversation turns (dialogue format)"
+      # For dialogue:
+      turns:
+        type: list
+        nullable: true
+        items:
+          type: object
+          fields:
+            role:
+              type: enum
+              values: [user, assistant, system]
+              description: "Speaker role in the conversation turn"
+            content:
+              type: string
+              description: "Text content of this conversation turn"
+        description: "Ordered conversation turns (dialogue format)"
 
-    # For completion:
-    prefix:
-      type: string
-      nullable: true
-      description: "The prompt prefix (completion format)"
+      # For completion:
+      prefix:
+        type: string
+        nullable: true
+        description: "The prompt prefix (completion format)"
 
-    completion:
-      type: string
-      nullable: true
-      description: "The expected completion (completion format)"
+      completion:
+        type: string
+        nullable: true
+        description: "The expected completion (completion format)"
 
   # --- Metadata ---
   source_topic:
