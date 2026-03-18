@@ -1,0 +1,407 @@
+# ============================================================================
+# KNOWLEDGE LIFECYCLE SCHEMA
+# ============================================================================
+# Defines how knowledge moves through storage tiers as it ages, and how
+# the system manages growing data without unbounded disk usage.
+#
+# Philosophy: "Every byte must earn its place"
+#   - New knowledge starts hot (in memory, instantly accessible)
+#   - As it ages and loses relevance, it cools (less storage cost)
+#   - The system never silently discards knowledge — it summarizes first
+#   - Users can always ask: "what did you learn about X?" even if ancient
+#
+# IMPLEMENTATION NOTES (crew/knowledge/):
+# - store.py:       Facade over all tiers (unified read/write API)
+# - hot.py:         In-memory LRU cache
+# - warm.py:        SQLite (local) + D1 (CF sync if enabled)
+# - cold.py:        Compressed files on disk + R2 (CF sync if enabled)
+# - lifecycle.py:   GC daemon, scoring, promotion/demotion, archiving
+# - embeddings.py:  Vector embeddings (sqlite-vec or numpy fallback)
+# - lora.py:        Build and manage LoRA training datasets
+#
+# GC runs daily at 02:00 local time (configurable).
+# Summary generation runs weekly (Sunday) and monthly (last day).
+# ============================================================================
+
+knowledge_lifecycle:
+
+  # =========================================================================
+  # STORAGE TIERS
+  # =========================================================================
+  tiers:
+
+    hot:
+      description: |
+        In-memory cache. Instantly accessible. Used for all active work.
+        Newest knowledge lives here. Always checked first on queries.
+      backend: "python dict + LRU eviction"
+      max_entries: 1000
+      max_age_hours: 24
+      eviction_policy: LRU
+      search: "linear scan (fast enough at <1000 entries)"
+      persistence: "SQLite backup every 5 minutes"
+      promotion_from: null  # New entries start here
+      demotion_to: warm
+
+    warm:
+      description: |
+        SQLite database (local) optionally synced to CF D1.
+        Accessible in milliseconds. Full metadata, vector embeddings.
+        This is the primary working knowledge store.
+      backend: "SQLite (local) + optional D1 sync"
+      max_entries: 100000
+      max_age_days: 30
+      eviction_policy: "score-based (see scoring)"
+      search: "SQLite FTS5 + vector cosine similarity"
+      persistence: "sqlite on disk, optional D1 sync async"
+      promotion_from: hot
+      demotion_to: cold
+
+    cold:
+      description: |
+        Compressed JSON files on local disk, optionally archived to CF R2.
+        Accessed rarely. Kept for historical reference and reactivation.
+        No vector embeddings (regenerated if needed when promoted).
+      backend: "gzip JSON files + optional R2"
+      max_entries: null  # Disk-bound
+      max_age_days: 180
+      eviction_policy: "age + score-based"
+      search: "metadata index only (SQLite summary table)"
+      persistence: "local disk + optional R2 sync"
+      promotion_from: warm
+      demotion_to: archive
+
+    archive:
+      description: |
+        Final form before deletion. Summarized to 100-char insight.
+        Entry ID and summary kept forever in SQLite, blob purged.
+        Like a cemetery marker — you know it existed, not all details.
+      backend: "SQLite metadata only"
+      max_entries: null  # Very cheap, just text
+      max_age_days: null  # Never auto-deleted from archive index
+      eviction_policy: "manual or if contradicted by very_high confidence"
+      search: "SQLite FTS on summary"
+      persistence: "SQLite"
+      promotion_from: cold
+      demotion_to: null  # Final state
+
+  # =========================================================================
+  # SCORING ALGORITHM
+  # =========================================================================
+  scoring:
+    description: |
+      Each knowledge entry gets a score 0.0-1.0.
+      Higher score = more valuable = keep in warm tier.
+      Score drives eviction decisions in GC cycle.
+
+    formula: |
+      score = (confidence_weight × confidence_score)
+             × (recency_weight × recency_factor)
+             × (evidence_weight × evidence_score)
+             × (usage_weight × usage_factor)
+
+    weights:
+      confidence: 0.40   # Most important factor
+      recency:    0.25   # Recent knowledge is more relevant
+      evidence:   0.20   # More experiments = more trustworthy
+      usage:      0.15   # Frequently queried = keep hot
+
+    confidence_scores:
+      low:       0.25
+      medium:    0.50
+      high:      0.80
+      very_high: 1.00
+
+    recency_factor:
+      description: "Exponential decay: 1.0 at creation, 0.5 at 30 days"
+      formula: "exp(-age_days / 30.0)"
+
+    evidence_score:
+      description: "Normalized: 0.0 at 0 experiments, 1.0 at 20+ experiments"
+      formula: "min(experiments_supporting / 20.0, 1.0)"
+
+    usage_factor:
+      description: "How often this entry was returned in queries"
+      formula: "min(queries_in_last_7d / 10.0, 1.0)"
+      default_if_new: 0.5
+
+    eviction_threshold:
+      warm_to_cold: 0.30  # Score < 0.30 → demote to cold
+      cold_to_archive: null  # Age-based demotion (> 180 days)
+
+  # =========================================================================
+  # GARBAGE COLLECTION CYCLE
+  # =========================================================================
+  gc:
+    schedule:
+      type: cron
+      expression: "0 2 * * *"   # 02:00 local time daily
+      description: "Full GC cycle runs nightly"
+
+    steps:
+      - name: score_warm_entries
+        description: "Recalculate scores for all warm entries"
+        estimated_duration_seconds: 30
+
+      - name: update_hot_cache
+        description: "Sync hot cache with warm store, evict stale hot entries"
+        estimated_duration_seconds: 5
+
+      - name: demote_cold_candidates
+        description: |
+          Move warm entries with score < threshold OR age > 30d to cold tier.
+          Compress to JSON.gz, move to cold storage, remove from warm SQLite.
+        estimated_duration_seconds: 60
+        action_per_entry:
+          compress_to: "data/knowledge/cold/{year}/{month}/{id}.json.gz"
+          remove_embeddings: true  # Save space, regenerate if reactivated
+          update_summary_index: true
+
+      - name: sync_to_cloudflare
+        description: |
+          If CF enabled:
+          - Sync new warm entries to D1
+          - Upload cold files to R2
+          - Update KV counters
+        cloudflare_dependent: true
+        estimated_duration_seconds: 30
+
+      - name: archive_old_cold
+        description: |
+          Cold entries older than max_age_days → archive.
+          Generate 100-char summary, write to archive table.
+          Delete cold file (or keep in R2 if budget allows).
+        estimated_duration_seconds: 30
+
+      - name: embed_new_warm
+        description: |
+          Generate vector embeddings for warm entries missing them.
+          Uses local sentence-transformers or CF Workers AI.
+        estimated_duration_seconds: 120
+
+      - name: weekly_summary
+        condition: "if day_of_week == 6 (Sunday)"
+        description: |
+          Generate weekly summary of all knowledge changes.
+          Save to data/summaries/weekly/{date}.md
+          Optionally upload to CF R2.
+
+      - name: report_gc_stats
+        description: "Log GC results: entries moved, space freed, errors"
+        estimated_duration_seconds: 5
+
+  # =========================================================================
+  # SUMMARIZATION RULES
+  # =========================================================================
+  summarization:
+    description: |
+      Before any knowledge is permanently deleted, it is summarized.
+      Summaries are permanent (kept in archive table forever).
+      This preserves the "we learned this" fact even after data is gone.
+
+    entry_summary:
+      max_length: 100
+      format: "{category}: {insight_first_50_chars}... [confidence={confidence}, experiments={n}]"
+      example: "hyperparameter: Optimal LR decreases with depth (~LR∝1/sqrt(D))... [confidence=medium, experiments=9]"
+
+    weekly_summary:
+      includes:
+        - entries_created: int
+        - entries_promoted_to_cold: int
+        - entries_archived: int
+        - new_high_confidence_insights: list (up to 5)
+        - top_research_topics: list (up to 5)
+        - knowledge_store_size: {hot, warm, cold, archive}
+        - training_data_added: {examples_count, dataset_tags}
+
+    monthly_summary:
+      includes:
+        - everything from weekly
+        - confidence_distribution: {low, medium, high, very_high: count}
+        - category_distribution: dict
+        - top_validated_insights: list (up to 10)
+        - deprecated_insights: list
+        - cloudflare_usage: dict (if enabled)
+
+  # =========================================================================
+  # VECTOR EMBEDDINGS
+  # =========================================================================
+  embeddings:
+    description: |
+      All warm entries have vector embeddings for semantic search.
+      Embeddings are computed locally or via CF Workers AI.
+
+    backends:
+      local_sentence_transformers:
+        model: "sentence-transformers/all-MiniLM-L6-v2"
+        dimensions: 384
+        cost: "CPU only, ~50ms/entry"
+        use_when: "sentence-transformers installed"
+
+      cf_workers_ai:
+        model: "@cf/baai/bge-base-en-v1.5"
+        dimensions: 768
+        cost: "~1 neuron/input from CF budget"
+        use_when: "CF enabled AND local backend unavailable"
+
+      numpy_tfidf_fallback:
+        dimensions: null  # variable (vocab size)
+        cost: "free, CPU only, weaker semantic quality"
+        use_when: "no other backend available"
+
+    storage:
+      in_sqlite: "entries < 100k (serialized as BLOB)"
+      in_qdrant: "entries > 100k (separate vector DB)"
+      in_d1: "synced subset (recent + high-confidence only)"
+
+    similarity_search:
+      metric: cosine
+      top_k: 10
+      threshold: 0.7  # Minimum similarity to return
+
+  # =========================================================================
+  # LORA DATASET MANAGEMENT
+  # =========================================================================
+  lora_datasets:
+    description: |
+      Teacher agents generate training examples that accumulate into LoRA
+      datasets. These are used to fine-tune local models into domain specialists.
+
+      Dataset lifecycle:
+        collecting → ready_to_train → trained → archived
+
+    storage:
+      format: JSONL
+      path_template: "data/training/{dataset_tag}/{split}.jsonl"
+      splits: [train, validation]
+      validation_ratio: 0.1
+
+    quality_control:
+      min_quality_score: 0.6
+      require_critic_review: false  # Optional: critic must approve
+      dedup_threshold: 0.85   # Remove examples with >85% similarity
+
+    dataset_formats:
+      qa_pair:
+        description: "Simple question-answer pairs"
+        schema:
+          question: string
+          answer: string
+          source: string
+          difficulty: [easy, medium, hard, expert]
+
+      instruction_response:
+        description: "Instruction-following format (Alpaca-style)"
+        schema:
+          instruction: string
+          input: string  # Optional context
+          output: string
+          system_prompt: string  # Optional
+          source: string
+
+      dialogue:
+        description: "Multi-turn conversation format (ChatML)"
+        schema:
+          messages:
+            - role: [system, user, assistant]
+              content: string
+
+      completion:
+        description: "Raw completion (GPT-style pretraining)"
+        schema:
+          text: string
+          source: string
+
+    training_trigger:
+      description: "When to trigger LoRA training"
+      min_examples: 500         # Need at least 500 examples
+      min_quality_examples: 300 # Of which 300 must score > 0.6
+      check_interval_hours: 24  # Check readiness daily
+
+  # =========================================================================
+  # ALLOCATED COLD STORAGE
+  # =========================================================================
+  cold_storage:
+    description: |
+      Cold storage is user's hard drive used as allocated space.
+      Unlike caching, this is intentionally managed long-term storage.
+
+    allocation:
+      description: "How much disk to use for cold storage"
+      default_gb: 50
+      configurable: true
+      warning_pct: 0.85    # Warn at 85% of allocation
+      cleanup_pct: 0.95    # Auto-GC at 95% of allocation
+
+    directory_structure: |
+      data/knowledge/
+        hot_backup.db    # SQLite backup of hot cache
+        warm.db          # SQLite warm store (main working DB)
+        cold/
+          {year}/
+            {month}/
+              {entry_id}.json.gz
+        archive.db       # SQLite archive index (tiny)
+      data/training/
+        {dataset_tag}/
+          train.jsonl
+          validation.jsonl
+          metadata.yaml
+      data/summaries/
+        weekly/
+          {year}-W{week}.md
+        monthly/
+          {year}-{month}.md
+
+# ============================================================================
+# EXAMPLES
+# ============================================================================
+
+examples:
+
+  knowledge_entry_hot:
+    id: 1
+    insight: "Optimal LR for DEPTH=8 is 0.0048 ± 0.001. Rates > 0.01 cause instability."
+    category: hyperparameter
+    tags: ["learning-rate", "depth-8", "stability"]
+    confidence: very_high
+    status: active
+    tier: hot
+    score: 0.92  # High: very_high confidence, recent, 24 experiments, frequently queried
+    created_at: "2026-03-17T22:00:00Z"
+    queries_last_7d: 18
+
+  knowledge_entry_about_to_demote:
+    id: 8
+    insight: "Batch size 32 optimal for DEPTH=8 with fixed LR."
+    category: hyperparameter
+    tags: ["batch-size", "depth-8"]
+    confidence: medium
+    status: questioned
+    tier: warm
+    score: 0.25  # Low: medium confidence, 30+ days old, status=questioned
+    created_at: "2026-02-15T10:00:00Z"
+    queries_last_7d: 1
+    # Will be demoted to cold on next GC cycle
+
+  lora_dataset_status:
+    dataset_tag: "lr-theory-2026-03"
+    examples_count: 420
+    quality_examples_count: 385  # Score > 0.6
+    status: collecting  # Not yet enough for training (< 500)
+    formats_present: [qa_pair, instruction_response]
+    last_updated: "2026-03-18T15:20:00Z"
+    estimated_training_ready: "2026-03-19"  # Based on teacher rate
+
+  gc_report:
+    date: "2026-03-18"
+    entries_scored: 1245
+    hot_cache_evicted: 12
+    warm_to_cold: 3
+    cold_to_archive: 0
+    new_embeddings_generated: 47
+    space_freed_mb: 8.2
+    duration_seconds: 48
+    errors: 0
+    cloudflare_d1_synced: 47
+    cloudflare_r2_uploaded: 3

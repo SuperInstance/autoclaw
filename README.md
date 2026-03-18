@@ -1,90 +1,379 @@
-# autoresearch
+# AutoCrew
 
-*One day, frontier AI research used to be done by meat computers in between eating, sleeping, having other fun, and synchronizing once in a while using sound wave interconnect in the ritual of "group meeting". That era is long gone. Research is now entirely the domain of autonomous swarms of AI agents running across compute cluster megastructures in the skies. The agents claim that we are now in the 10,205th generation of the code base, in any case no one could tell if that's right or wrong as the "code" is now a self-modifying binary that has grown beyond human comprehension. This repo is the story of how it all began. -@karpathy, March 2026*.
+**Autonomous multi-agent knowledge system. 24/7 crew of researchers, teachers, critics, and synthesizers building your knowledge base.**
 
-The idea: give an AI agent a small but real LLM training setup and let it experiment autonomously overnight. It modifies the code, trains for 5 minutes, checks if the result improved, keeps or discards, and repeats. You wake up in the morning to a log of experiments and (hopefully) a better model. The training code here is a simplified single-GPU implementation of [nanochat](https://github.com/karpathy/nanochat). The core idea is that you're not touching any of the Python files like you normally would as a researcher. Instead, you are programming the `program.md` Markdown files that provide context to the AI agents and set up your autonomous research org. The default `program.md` in this repo is intentionally kept as a bare bones baseline, though it's obvious how one would iterate on it over time to find the "research org code" that achieves the fastest research progress, how you'd add more agents to the mix, etc. A bit more context on this project is here in this [tweet](https://x.com/karpathy/status/2029701092347630069).
+---
 
-## How it works
+## The Concept
 
-The repo is deliberately kept small and only really has three files that matter:
+```mermaid
+graph LR
+    A["👤 Human<br/>Input Task"] -->|"crew add"| B["📬 Message Bus<br/>SQLite Pub/Sub"]
+    B -->|research| R["🔍 Researcher<br/>Web Search + LLM"]
+    B -->|teach| T["📚 Teacher<br/>Q&A Generation"]
+    B -->|critique| C["⚖️ Critic<br/>Quality Check"]
+    B -->|synthesize| D["🧠 Distiller<br/>Knowledge Synthesis"]
+    R & T & C & D -->|publish| K["💾 Knowledge Store<br/>Hot/Warm/Cold Tiers"]
+    K -->|vectorize| V["⚡ VectorDB<br/>Semantic Search"]
+    V & K -->|query| A
+    style B fill:#50E3C2
+    style R fill:#4A90E2,color:#fff
+    style T fill:#7ED321,color:#000
+    style C fill:#F5A623,color:#fff
+    style D fill:#BD10E0,color:#fff
+    style K fill:#FFE5B4
+    style V fill:#FFFACD
+```
 
-- **`prepare.py`** — fixed constants, one-time data prep (downloads training data, trains a BPE tokenizer), and runtime utilities (dataloader, evaluation). Not modified.
-- **`train.py`** — the single file the agent edits. Contains the full GPT model, optimizer (Muon + AdamW), and training loop. Everything is fair game: architecture, hyperparameters, optimizer, batch size, etc. **This file is edited and iterated on by the agent**.
-- **`program.md`** — baseline instructions for one agent. Point your agent here and let it go. **This file is edited and iterated on by the human**.
+**What agents do on each message:**
 
-By design, training runs for a **fixed 5-minute time budget** (wall clock, excluding startup/compilation), regardless of the details of your compute. The metric is **val_bpb** (validation bits per byte) — lower is better, and vocab-size-independent so architectural changes are fairly compared.
+```mermaid
+graph TD
+    MSG["New Message<br/>in Bus"] -->|task_request| ROUTE{Agent<br/>Subscription?}
+    ROUTE -->|researcher| R["Web Search<br/>→ Fetch URLs<br/>→ Synthesize<br/>→ Confidence Score"]
+    ROUTE -->|teacher| T["Extract Text<br/>→ Generate Q&A<br/>→ Format Pairs<br/>→ Rate Quality"]
+    ROUTE -->|critic| C["Evaluate Claim<br/>→ Spot Check Facts<br/>→ Challenge Weak Points<br/>→ Update Confidence"]
+    ROUTE -->|distiller| D["Batch Entries<br/>→ Synthesize<br/>→ Create Summary<br/>→ Export JSONL"]
+    ROUTE -->|no_match| SKIP["Drop"]
+    R & T & C & D -->|publish| K["Knowledge Store"]
+    style R fill:#4A90E2,color:#fff
+    style T fill:#7ED321,color:#000
+    style C fill:#F5A623,color:#fff
+    style D fill:#BD10E0,color:#fff
+    style K fill:#50E3C2,color:#000
+```
 
-If you are new to neural networks, this ["Dummy's Guide"](https://x.com/hooeem/status/2030720614752039185) looks pretty good for a lot more context.
+---
 
-## Quick start
+## The Knowledge Lifecycle
 
-**Requirements:** A single NVIDIA GPU (tested on H100), Python 3.10+, [uv](https://docs.astral.sh/uv/).
+```mermaid
+graph TB
+    NEW["🆕 New Insight<br/>Confidence Score"] --> ROUTE{Score?}
+    ROUTE -->|High<br/>≥0.75| HOT["🔥 HOT TIER<br/>RAM Cache<br/>1000 entries<br/>24h expiry<br/>LRU eviction"]
+    ROUTE -->|Medium<br/>0.3-0.75| WARM["🌤️ WARM TIER<br/>SQLite DB<br/>100k entries<br/>30d age<br/>Full-Text Search"]
+    ROUTE -->|Low<br/><0.3| COLD["❄️ COLD TIER<br/>Gzip Files<br/>180d age<br/>Batch Archive"]
+
+    HOT -->|Age>24h<br/>OR Score↓| WARM
+    WARM -->|Score<0.3<br/>OR Age>30d| COLD
+    COLD -->|Age>180d| ARCH["🗂️ ARCHIVE<br/>Summary Only<br/>Forever"]
+
+    WARM -->|Query Hit<br/>Refresh Score| HOT
+
+    COLD -.->|Daily GC<br/>0.40×conf<br/>0.25×recency<br/>0.20×evidence<br/>0.15×usage| SCORE["Score"]
+    SCORE -.-> ROUTE
+
+    style HOT fill:#FFE5B4
+    style WARM fill:#FFFACD
+    style COLD fill:#D3D3D3
+    style ARCH fill:#A9A9A9,color:#fff
+    style NEW fill:#FF6B6B,color:#fff
+```
+
+---
+
+## The Dual Knowledge System
+
+```mermaid
+graph TB
+    USER["🔍 User Query<br/>e.g. 'LLM scaling laws'"] -->|"crew knowledge query"| VDB["⚡ VectorDB<br/>Semantic Search<br/>O1 latency"]
+
+    VDB -->|Top 3 Results| FETCH["Fetch Source Links"]
+    FETCH -->|Links| WIKI["📖 Wiki<br/>Markdown Files<br/>Traceable Sources"]
+
+    WIKI -->|"Author, Date,<br/>Evidence, Links"| RESP["✅ Response<br/>+ Confidence<br/>+ Sources<br/>+ Chain-of-Thought"]
+    VDB -->|Backlinks| RESP
+
+    WIKI -->|Text| EMB["→ Extract<br/>→ Embed<br/>→ Index"]
+    EMB -->|Vectors| VDB
+
+    style USER fill:#4A90E2,color:#fff
+    style VDB fill:#7ED321,color:#000
+    style WIKI fill:#50E3C2,color:#000
+    style RESP fill:#F5A623,color:#fff
+```
+
+---
+
+## Five Use Cases
+
+### 1️⃣ **Interactive Meeting Assistant**
+
+```mermaid
+timeline
+    title Real-Time Strategy Meeting
+    Meeting Start: Get meeting context → Researcher pulls historical data
+    Decision Point 1: Critic flags assumption conflicts → Distiller summarizes context
+    Decision Point 2: Teacher generates talking points → Researcher fetches competitor intel
+    End: Distiller creates action item summary before you leave
+```
+
+**Flow**: Voice/text → Task → Researcher (web) → Critic (challenge) → Distiller (summary) → Wiki + VectorDB
+
+**Benefit**: "Find all pricing discussions" → Sub-second semantic search with sources
+
+---
+
+### 2️⃣ **Personal Tutor (Grows With You)**
+
+```mermaid
+graph LR
+    A["📖 Start Topic<br/>Calculus"] --> B["🔍 Researcher<br/>Finds tutorials<br/>Matches level"]
+    B --> C["📚 Teacher<br/>Generates<br/>Practice problems"]
+    C --> D["✅ Student<br/>Solves"]
+    D --> E["⚖️ Critic<br/>Grades<br/>Provides feedback"]
+    E --> F["🧠 Distiller<br/>Maps gaps<br/>Next topic"]
+    F --> G["📊 Knowledge Map<br/>Your Growth<br/>Over 3 months"]
+
+    style B fill:#4A90E2,color:#fff
+    style C fill:#7ED321,color:#000
+    style E fill:#F5A623,color:#fff
+    style F fill:#BD10E0,color:#fff
+    style G fill:#FFE5B4
+```
+
+**Flow**: Lesson → Teacher (practice) → Critic (grading) → Distiller (gap analysis) → Personalized curriculum
+
+**Benefit**: System learns your weak points, generates targeted exercises, adapts difficulty
+
+---
+
+### 3️⃣ **Creative World-Building (TTRPG/Games)**
+
+```mermaid
+graph TB
+    WB["🌍 World Idea<br/>Fantasy Kingdom"] --> ITER["Iteration 1"]
+
+    ITER --> R1["🔍 Researcher<br/>Real kingdoms<br/>Economic systems<br/>Language roots"]
+    ITER --> T1["📚 Teacher<br/>World Prompts<br/>Story hooks"]
+    ITER --> C1["⚖️ Critic<br/>Flag paradoxes<br/>Challenge logic"]
+    ITER --> D1["📖 Distiller<br/>World Bible<br/>Faction Chart"]
+
+    C1 -->|"Inconsistencies"| ITER2["Iteration 2<br/>Refine Rules"]
+    R1 & T1 & D1 -->|"Into Wiki"| WIKI["World Bible<br/>- Rules<br/>- Factions<br/>- Timeline<br/>- Proof"]
+
+    WIKI -->|VectorDB| QUERY["'Show all<br/>trade conflicts'<br/>→ Instant List"]
+
+    style WB fill:#FF6B6B,color:#fff
+    style WIKI fill:#50E3C2
+    style QUERY fill:#7ED321,color:#000
+```
+
+**Flow**: Creative input → Research (analogs) → Critique (consistency) → Synthesize (world bible) → Query (semantic search)
+
+**Benefit**: Consistency checking, real-world grounding, instant lore lookup
+
+---
+
+### 4️⃣ **Enterprise Research Compiler**
+
+```mermaid
+graph LR
+    STREAM["📰 200+ Papers/Mo<br/>PubMed, arXiv,<br/>News"] -->|Daily| R["🔍 Researcher<br/>Auto-scan<br/>Filter relevance"]
+    R --> T["📚 Teacher<br/>Structured<br/>Summary"]
+    T --> C["⚖️ Critic<br/>Validate Claims<br/>Check Evidence"]
+    C --> D["📊 Distiller<br/>Quarterly Brief<br/>Consensus Map"]
+    D --> WIKI["🏛️ Institution<br/>Knowledge Base<br/>Auditable<br/>Traceable"]
+    WIKI --> VDB["⚡ Search<br/'Find all protein<br/>family work'"]
+
+    style R fill:#4A90E2,color:#fff
+    style T fill:#7ED321,color:#000
+    style C fill:#F5A623,color:#fff
+    style D fill:#BD10E0,color:#fff
+    style WIKI fill:#50E3C2
+```
+
+**Flow**: Paper stream → Filter → Summarize → Validate → Synthesize → Archive → Audit trail
+
+**Benefit**: Institutional memory, source-linked claims, instant competitor tracking
+
+---
+
+### 5️⃣ **Narrative Game Engine**
+
+```mermaid
+graph TB
+    GAME["🎮 Player Action<br/>Defy Prophecy?"] -->|Query| R["🔍 Researcher<br/>Narrative patterns<br/>Precedents"]
+    GAME -->|Consistency| C["⚖️ Critic<br/>NPC History<br/>Continuity Check"]
+    R & C --> T["📚 Teacher<br/>Generate<br/>5 Plot Paths"]
+    T --> PLAYER["Player Chooses"]
+    PLAYER -->|New State| D["🧠 Distiller<br/>Update Lore<br/>Track threads"]
+    D --> WIKI["📖 Narrative Bible<br/>Every decision<br/>Every thread<br/>Every consequence"]
+
+    style GAME fill:#FF6B6B,color:#fff
+    style R fill:#4A90E2,color:#fff
+    style C fill:#F5A623,color:#fff
+    style T fill:#7ED321,color:#000
+    style D fill:#BD10E0,color:#fff
+    style WIKI fill:#50E3C2
+```
+
+**Flow**: Player input → Pattern matching → Consistency check → Generate branches → Execute → Record → Update lore
+
+**Benefit**: Dynamic storytelling grounded in persistent, traceable lore
+
+---
+
+## Hardware Scaling
+
+```mermaid
+graph LR
+    AUTO["🔍 Auto-Detect<br/>Hardware"] -->|Jetson device<br/>tree| NANO["Jetson Nano<br/>2 agents<br/>Q4 Quantization"]
+    AUTO -->|CUDA<br/>Check| ORIN["Jetson Orin<br/>4 agents<br/>Q5"]
+    AUTO -->|VRAM<br/>Check| LAP["Laptop GPU<br/>RTX 4050<br/>4 agents<br/>Q5"]
+    AUTO -->|Multi-GPU| WS["Workstation<br/>8 agents<br/>fp16/vLLM"]
+    AUTO -->|Tensor<br/>parallel| MULTI["Multi-GPU<br/>16 agents<br/>Tensor Parallel"]
+    AUTO -->|No GPU| CPU["CPU-only<br/>2 agents<br/>Q4"]
+    AUTO -->|Cloud<br/>API| CLOUD["Cloud<br/>32 agents<br/>CF Workers AI"]
+
+    style NANO fill:#FF6B6B,color:#fff
+    style ORIN fill:#F5A623
+    style LAP fill:#7ED321,color:#000
+    style WS fill:#4A90E2,color:#fff
+    style MULTI fill:#BD10E0,color:#fff
+    style CPU fill:#A9A9A9,color:#fff
+    style CLOUD fill:#50E3C2
+```
+
+---
+
+## Cloudflare Credit Gaming
+
+```mermaid
+graph TD
+    RESET["⏰ Daily Reset<br/>00:00 UTC"] -->|Monitor| USAGE["🔍 Usage Tracker<br/>Workers AI<br/>D1, R2, KV"]
+
+    USAGE -->|≤70%| FREE["🟢 FREE<br/>Normal Speed"]
+    USAGE -->|70-85%| THROTTLE["🟡 THROTTLE<br/>Batch Tasks<br/>Lower Priority"]
+    USAGE -->|85-95%| BURN["🔴 BURN<br/>Use Credits<br/>End-of-Day"]
+    USAGE -->|≥95%| BLOCK["⛔ BLOCKED<br/>Local Fallback"]
+
+    BURN -->|23:45 UTC| EOD["🔥 End-of-Day<br/>Batch<br/>- Instruction Gen<br/>- Summary Writing<br/>- Archive Sync"]
+    EOD -->|Use Last<br/>Remaining| CREDIT["💰 Spend Credits<br/>Before Reset"]
+
+    style FREE fill:#7ED321
+    style THROTTLE fill:#F5A623
+    style BURN fill:#FF6B6B,color:#fff
+    style BLOCK fill:#A9A9A9,color:#fff
+    style EOD fill:#BD10E0,color:#fff
+```
+
+---
+
+## Core Commands
+
+```mermaid
+graph TD
+    CREW["crew"]
+
+    CREW -->|"🚀 start"| START["Single-Agent<br/>or --swarm flag"]
+    CREW -->|"➕ add"| ADD["New task<br/>to scheduler"]
+    CREW -->|"🎯 agents"| AGENTS["status/spawn<br/>Agent management"]
+    CREW -->|"💾 knowledge"| KB["query/gc/<br/>export-lora"]
+    CREW -->|"⚡ cf"| CF["status/burn<br/>Credit tracking"]
+    CREW -->|"📋 board"| BOARD["Show task board"]
+
+    style CREW fill:#4A90E2,color:#fff
+    style START fill:#7ED321,color:#000
+    style ADD fill:#F5A623
+    style AGENTS fill:#BD10E0,color:#fff
+    style KB fill:#50E3C2
+    style CF fill:#FFE5B4
+```
+
+---
+
+## Quick Start
 
 ```bash
+# Single-agent (research mode)
+crew start
+crew add "Research neural scaling laws"
+crew board
 
-# 1. Install uv project manager (if you don't already have it)
-curl -LsSf https://astral.sh/uv/install.sh | sh
+# Multi-agent swarm (collaborative)
+crew start --swarm
+crew agents status
+crew knowledge query --tag "scaling" --min-confidence high
 
-# 2. Install dependencies
-uv sync
-
-# 3. Download data and train tokenizer (one-time, ~2 min)
-uv run prepare.py
-
-# 4. Manually run a single training experiment (~5 min)
-uv run train.py
+# Knowledge management
+crew knowledge gc                           # Garbage collection
+crew knowledge query --tag "ml" --export-lora dataset.jsonl
 ```
 
-If the above commands all work ok, your setup is working and you can go into autonomous research mode.
+---
 
-## Running the agent
+## Why AutoCrew?
 
-Simply spin up your Claude/Codex or whatever you want in this repo (and disable all permissions), then you can prompt something like:
+```mermaid
+graph TB
+    AC["AutoCrew"] -->|"🏠 Local-First"| LF["Every component<br/>has a fallback<br/>→ Works offline<br/>→ No surprise costs"]
+
+    AC -->|"🔗 Interpretable"| INT["Wiki + VectorDB<br/>Always traceable<br/>→ Know why<br/>→ Follow sources"]
+
+    AC -->|"📈 Scalable"| SCALE["Auto-detects<br/>hardware<br/>Nano → Cloud<br/>→ Same code"]
+
+    AC -->|"💰 Cost-Smart"| COST["Credit gaming<br/>Teacher paces work<br/>→ No overage<br/>→ Auto-burn"]
+
+    AC -->|"🔧 Extensible"| EXT["Message bus<br/>makes agents<br/>plug-and-play<br/>→ Add ScientistAgent<br/>→ Add DesignAgent"]
+
+    style LF fill:#7ED321,color:#000
+    style INT fill:#50E3C2
+    style SCALE fill:#4A90E2,color:#fff
+    style COST fill:#FFE5B4
+    style EXT fill:#BD10E0,color:#fff
+```
+
+---
+
+## Testing & Status
+
+```mermaid
+graph TD
+    TESTS["15 Test Suites"] -->|✅| SYNTAX["Syntax Validation"]
+    TESTS -->|✅| IMPORTS["Core Imports"]
+    TESTS -->|✅| CONFIG["Configuration"]
+    TESTS -->|✅| AGENTS["4 Agents"]
+    TESTS -->|✅| BUS["Message Bus"]
+    TESTS -->|✅| KB["Knowledge Store"]
+    TESTS -->|✅| CREDITS["Credit Tracking"]
+    TESTS -->|✅| FALLBACK["Fallback Services"]
+
+    SYNTAX & IMPORTS & CONFIG & AGENTS & BUS & KB & CREDITS & FALLBACK -->|READY| PROD["🚀 Production"]
+
+    style PROD fill:#7ED321,color:#000,stroke:#000,stroke-width:3px
+```
+
+---
+
+## File Structure
 
 ```
-Hi have a look at program.md and let's kick off a new experiment! let's do the setup first.
+crew/
+├── daemon.py              # Entry point (single/swarm)
+├── cli.py                 # 24 Commands
+├── scheduler.py           # Task board
+├── agents/
+│   ├── base.py            # BaseAgent interface
+│   ├── pool.py            # AgentPool manager
+│   ├── researcher.py      # Web search
+│   ├── teacher.py         # Q&A generation
+│   ├── critic.py          # Quality check
+│   └── distiller.py       # Synthesis
+├── messaging/
+│   └── bus.py             # SQLite pub/sub
+├── knowledge/
+│   ├── store.py           # Hot/warm/cold tiers
+│   └── lifecycle.py       # GC + scoring
+├── cloudflare/
+│   ├── credits.py         # Limit tracking
+│   └── fallback.py        # LocalKV/D1/R2/AI
+└── hardware/
+    └── detector.py        # Profile detection
 ```
 
-The `program.md` file is essentially a super lightweight "skill".
+---
 
-## Project structure
+**Local. Interpretable. Scalable. Extensible. Cost-conscious.**
 
-```
-prepare.py      — constants, data prep + runtime utilities (do not modify)
-train.py        — model, optimizer, training loop (agent modifies this)
-program.md      — agent instructions
-pyproject.toml  — dependencies
-```
-
-## Design choices
-
-- **Single file to modify.** The agent only touches `train.py`. This keeps the scope manageable and diffs reviewable.
-- **Fixed time budget.** Training always runs for exactly 5 minutes, regardless of your specific platform. This means you can expect approx 12 experiments/hour and approx 100 experiments while you sleep. There are two upsides of this design decision. First, this makes experiments directly comparable regardless of what the agent changes (model size, batch size, architecture, etc). Second, this means that autoresearch will find the most optimal model for your platform in that time budget. The downside is that your runs (and results) become not comparable to other people running on other compute platforms.
-- **Self-contained.** No external dependencies beyond PyTorch and a few small packages. No distributed training, no complex configs. One GPU, one file, one metric.
-
-## Platform support
-
-This code currently requires that you have a single NVIDIA GPU. In principle it is quite possible to support CPU, MPS and other platforms but this would also bloat the code. I'm not 100% sure that I want to take this on personally right now. People can reference (or have their agents reference) the full/parent nanochat repository that has wider platform support and shows the various solutions (e.g. a Flash Attention 3 kernels fallback implementation, generic device support, autodetection, etc.), feel free to create forks or discussions for other platforms and I'm happy to link to them here in the README in some new notable forks section or etc.
-
-Seeing as there seems to be a lot of interest in tinkering with autoresearch on much smaller compute platforms than an H100, a few extra words. If you're going to try running autoresearch on smaller computers (Macbooks etc.), I'd recommend one of the forks below. On top of this, here are some recommendations for how to tune the defaults for much smaller models for aspiring forks:
-
-1. To get half-decent results I'd use a dataset with a lot less entropy, e.g. this [TinyStories dataset](https://huggingface.co/datasets/karpathy/tinystories-gpt4-clean). These are GPT-4 generated short stories. Because the data is a lot narrower in scope, you will see reasonable results with a lot smaller models (if you try to sample from them after training).
-2. You might experiment with decreasing `vocab_size`, e.g. from 8192 down to 4096, 2048, 1024, or even - simply byte-level tokenizer with 256 possibly bytes after utf-8 encoding.
-3. In `prepare.py`, you'll want to lower `MAX_SEQ_LEN` a lot, depending on the computer even down to 256 etc. As you lower `MAX_SEQ_LEN`, you may want to experiment with increasing `DEVICE_BATCH_SIZE` in `train.py` slightly to compensate. The number of tokens per fwd/bwd pass is the product of these two.
-4. Also in `prepare.py`, you'll want to decrease `EVAL_TOKENS` so that your validation loss is evaluated on a lot less data.
-5. In `train.py`, the primary single knob that controls model complexity is the `DEPTH` (default 8, here). A lot of variables are just functions of this, so e.g. lower it down to e.g. 4.
-6. You'll want to most likely use `WINDOW_PATTERN` of just "L", because "SSSL" uses alternating banded attention pattern that may be very inefficient for you. Try it.
-7. You'll want to lower `TOTAL_BATCH_SIZE` a lot, but keep it powers of 2, e.g. down to `2**14` (~16K) or so even, hard to tell.
-
-I think these would be the reasonable hyperparameters to play with. Ask your favorite coding agent for help and copy paste them this guide, as well as the full source code.
-
-## Notable forks
-
-- [miolini/autoresearch-macos](https://github.com/miolini/autoresearch-macos) (MacOS)
-- [trevin-creator/autoresearch-mlx](https://github.com/trevin-creator/autoresearch-mlx) (MacOS)
-- [jsegov/autoresearch-win-rtx](https://github.com/jsegov/autoresearch-win-rtx) (Windows)
-- [andyluo7/autoresearch](https://github.com/andyluo7/autoresearch) (AMD)
-
-## License
-
-MIT
+MIT License • [Docs](docs/) • [Issues](../../issues)

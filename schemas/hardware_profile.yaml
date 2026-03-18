@@ -1,0 +1,480 @@
+# ============================================================================
+# HARDWARE PROFILE SCHEMA
+# ============================================================================
+# Defines hardware detection, profiles, and runtime configuration.
+#
+# The system auto-detects the hardware at startup and selects the appropriate
+# profile. Profiles determine:
+#   - How many agents to spawn
+#   - Which inference backend to use
+#   - Model size and quantization
+#   - Memory limits per component
+#   - Cloudflare dependency (API-heavy vs local-heavy)
+#
+# IMPLEMENTATION NOTES (crew/hardware/):
+# - detector.py:  Auto-detect hardware and select profile
+# - profiles.py:  Profile definitions and constraint enforcement
+# - scaler.py:    Dynamic resource allocation within a profile
+#
+# Profile is set at daemon startup and stored in data/crew/state.yaml.
+# Can be overridden in data/config.yaml with hardware.force_profile.
+# ============================================================================
+
+hardware_detection:
+  description: |
+    Detection runs at daemon startup. Results are cached in state.yaml.
+    Force a profile by setting hardware.force_profile in config.yaml.
+
+  detection_steps:
+    1_check_jetson:
+      description: "Check if running on Jetson (NVIDIA embedded device)"
+      method: "Read /proc/device-tree/model or check /etc/nv_tegra_release"
+      if_true: "Use 'nano' profile (or 'jetson_orin' for Orin series)"
+
+    2_check_cuda:
+      description: "Check CUDA availability and VRAM"
+      method: "torch.cuda.is_available() + torch.cuda.get_device_properties()"
+      vram_gb_thresholds:
+        no_gpu: 0
+        minimal: [0, 4]       # < 4GB VRAM → laptop_light or cpu_only
+        laptop_gpu: [4, 12]   # 4-12GB → laptop_gpu profile
+        workstation: [12, 48] # 12-48GB → workstation profile
+        high_end: [48, inf]   # 48GB+ → high_end or multi_gpu
+
+    3_check_multi_gpu:
+      description: "Check if multiple GPUs are available"
+      method: "torch.cuda.device_count() > 1"
+      if_true: "Use 'multi_gpu' profile regardless of per-GPU VRAM"
+
+    4_check_ram:
+      description: "System RAM available"
+      method: "psutil.virtual_memory().total"
+
+    5_check_cpu:
+      description: "CPU cores and architecture"
+      method: "os.cpu_count() + platform.machine()"
+
+    6_select_profile:
+      description: "Select final profile based on above"
+      logic: |
+        if jetson and vram_gb < 8: return "nano"
+        elif jetson and vram_gb >= 8: return "jetson_orin"
+        elif multi_gpu: return "multi_gpu"
+        elif vram_gb >= 48: return "high_end"
+        elif vram_gb >= 12: return "workstation"
+        elif vram_gb >= 4: return "laptop_gpu"
+        elif cuda_available: return "cpu_only"
+        else: return "cloud"
+
+# ============================================================================
+# PROFILE DEFINITIONS
+# ============================================================================
+
+profiles:
+
+  nano:
+    display_name: "Jetson Nano 8GB"
+    description: |
+      NVIDIA Jetson Nano. ARM64 CPU, 8GB shared RAM/VRAM.
+      CUDA via Tegra (unified memory). No PCIe GPU.
+      Optimized for: lightweight inference, knowledge management, small agents.
+    detection:
+      device_tree_contains: ["nano", "orin-nano"]
+      ram_gb_max: 8
+
+    compute:
+      cuda: true
+      vram_gb: 8          # Shared with system RAM
+      unified_memory: true
+      cpu_cores: 6
+      architecture: arm64
+
+    inference_backend:
+      primary: "llama.cpp"
+      quantization: "Q4_K_M"   # 4-bit quantized, balanced quality
+      max_model_params: "3B"   # Phi-3-mini, TinyLlama, etc.
+      recommended_models:
+        - id: "microsoft/phi-3-mini-4k-instruct-gguf"
+          vram_gb: 2.5
+          use_for: [agent_reasoning, simple_qa]
+        - id: "tinyllama/tinyllama-1.1b-chat-gguf"
+          vram_gb: 0.8
+          use_for: [bulk_generation, filtering]
+
+    agents:
+      max_concurrent: 2
+      recommended_composition:
+        researcher: 1
+        teacher: 1
+        critic: 0       # Too resource-heavy, skip on nano
+        distiller: 0    # Skip or do sync (blocking) distillation
+        specialist: 0   # Train specialist then load here
+      use_cloudflare: true  # Nano heavily depends on CF for AI tasks
+
+    memory_limits:
+      hot_cache_entries: 200
+      warm_db_size_mb: 256
+      embedding_cache_mb: 64
+
+    cloudflare_strategy: "heavy"
+    description_long: |
+      Nano offloads most AI inference to Cloudflare Workers AI.
+      Local llama.cpp handles simple classification and filtering.
+      Jetson acts as always-on coordinator with low power consumption.
+
+  jetson_orin:
+    display_name: "Jetson Orin 32/64GB"
+    description: |
+      NVIDIA Jetson Orin series. More powerful than Nano.
+      32 or 64GB shared memory, Ampere GPU architecture.
+    detection:
+      device_tree_contains: ["orin"]
+      ram_gb_min: 16
+
+    compute:
+      cuda: true
+      vram_gb: 32         # Or 64 depending on model
+      unified_memory: true
+      cpu_cores: 12
+      architecture: arm64
+
+    inference_backend:
+      primary: "llama.cpp"
+      quantization: "Q5_K_M"
+      max_model_params: "13B"
+      recommended_models:
+        - id: "mistral-7b-instruct-v0.2-gguf"
+          vram_gb: 5
+          use_for: [agent_reasoning, instruction_gen]
+        - id: "neural-chat-7b-v3-1-gguf"
+          vram_gb: 5
+          use_for: [teacher_training_data]
+
+    agents:
+      max_concurrent: 4
+      recommended_composition:
+        researcher: 1
+        teacher: 2
+        critic: 1
+        distiller: 1
+        specialist: 0
+
+    memory_limits:
+      hot_cache_entries: 500
+      warm_db_size_mb: 1024
+      embedding_cache_mb: 256
+
+    cloudflare_strategy: "balanced"
+
+  laptop_gpu:
+    display_name: "Laptop GPU (RTX 4050/4060)"
+    description: |
+      Consumer laptop with dedicated NVIDIA GPU.
+      Limited VRAM (6-8GB), but full CUDA capability.
+      Optimized for: balanced local + cloud work.
+    detection:
+      vram_gb_range: [4, 12]
+      not_jetson: true
+
+    compute:
+      cuda: true
+      vram_gb: 6            # Conservative default (RTX 4050)
+      architecture: x86_64
+      cpu_cores: 8
+
+    inference_backend:
+      primary: "llama.cpp"
+      secondary: "vllm"     # For larger models if VRAM allows
+      quantization: "Q5_K_M"
+      max_model_params: "13B"
+      recommended_models:
+        - id: "mistral-7b-instruct-v0.2-gguf"
+          vram_gb: 5
+          use_for: [agent_reasoning, qa_generation]
+        - id: "phi-3-mini-128k-instruct-gguf"
+          vram_gb: 2.5
+          use_for: [bulk_generation, classification]
+
+    agents:
+      max_concurrent: 4
+      recommended_composition:
+        researcher: 1
+        teacher: 2
+        critic: 1
+        distiller: 1
+        specialist: 1    # If specialist LoRA exists
+
+    memory_limits:
+      hot_cache_entries: 1000
+      warm_db_size_mb: 2048
+      embedding_cache_mb: 512
+
+    cloudflare_strategy: "balanced"
+
+  workstation:
+    display_name: "Workstation GPU (RTX 4080/4090/A6000)"
+    description: |
+      Desktop workstation with high-VRAM GPU.
+      Can run full 13B-70B models in fp16.
+      Optimized for: heavy local inference, large agent pools.
+    detection:
+      vram_gb_range: [12, 48]
+      not_jetson: true
+
+    compute:
+      cuda: true
+      vram_gb: 24           # RTX 4090 default
+      architecture: x86_64
+      cpu_cores: 16
+
+    inference_backend:
+      primary: "vllm"
+      quantization: "fp16"
+      max_model_params: "70B"
+      recommended_models:
+        - id: "meta-llama/Llama-3-8B-Instruct"
+          vram_gb: 16
+          use_for: [primary_agent_llm]
+        - id: "mistral-nemo-12b-instruct"
+          vram_gb: 12
+          use_for: [teacher_training_data]
+        - id: "meta-llama/Llama-3-70B-Instruct"
+          vram_gb: 40
+          use_for: [complex_reasoning]  # Only if 48GB+
+
+    agents:
+      max_concurrent: 8
+      recommended_composition:
+        researcher: 2
+        teacher: 3
+        critic: 1
+        distiller: 2
+        specialist: 2
+
+    memory_limits:
+      hot_cache_entries: 5000
+      warm_db_size_mb: 8192
+      embedding_cache_mb: 2048
+
+    cloudflare_strategy: "light"  # Mostly self-sufficient
+
+  multi_gpu:
+    display_name: "Multi-GPU Workstation"
+    description: |
+      Multiple GPUs for distributed inference and parallel agents.
+      Each GPU can run a separate model or tensor-parallel across GPUs.
+    detection:
+      gpu_count_min: 2
+
+    compute:
+      cuda: true
+      vram_gb: 48           # Per GPU assumption
+      gpu_count: 2          # minimum detected
+      architecture: x86_64
+      cpu_cores: 32
+
+    inference_backend:
+      primary: "vllm"
+      quantization: "fp16"
+      tensor_parallel: true
+      max_model_params: "405B"  # Llama 3.1 405B with 4×H100
+      recommended_models:
+        - id: "meta-llama/Llama-3.3-70B-Instruct"
+          tensor_parallel_size: 2
+          use_for: [primary_orchestrator_llm]
+        - id: "mistral-8x7b-instruct"
+          tensor_parallel_size: 2
+          use_for: [agent_reasoning]
+
+    agents:
+      max_concurrent: 16
+      recommended_composition:
+        researcher: 4
+        teacher: 6
+        critic: 2
+        distiller: 3
+        specialist: 4
+
+    memory_limits:
+      hot_cache_entries: 20000
+      warm_db_size_mb: 32768
+      embedding_cache_mb: 8192
+
+    cloudflare_strategy: "minimal"  # Mostly local
+
+  cloud:
+    display_name: "Cloud / API-only"
+    description: |
+      No local GPU. All inference via APIs.
+      Very scalable (add more agents = more API calls).
+      Cost scales with usage — use credit budgets carefully.
+    detection:
+      cuda_available: false
+
+    compute:
+      cuda: false
+      vram_gb: 0
+      architecture: x86_64
+
+    inference_backend:
+      primary: "api"
+      apis: [anthropic, openai, cloudflare_workers_ai]
+      max_model_params: null  # Limited only by API offering
+
+    agents:
+      max_concurrent: 32   # Scalable, but API rate-limited
+      recommended_composition:
+        researcher: 4
+        teacher: 8         # Heavy teacher load for training data
+        critic: 2
+        distiller: 4
+        specialist: 0      # No local inference
+      note: "Scale composition based on API budget"
+
+    memory_limits:
+      hot_cache_entries: 10000
+      warm_db_size_mb: 16384
+      embedding_cache_mb: 4096
+
+    cloudflare_strategy: "heavy"  # CF is main compute backbone
+
+  cpu_only:
+    display_name: "CPU Only (no GPU)"
+    description: |
+      Machine with no GPU or CUDA. CPU inference only.
+      Slow for large models. Use small quantized models.
+    detection:
+      cuda_available: false
+      not_cloud: true
+
+    compute:
+      cuda: false
+      vram_gb: 0
+      architecture: x86_64
+      cpu_cores: 8
+
+    inference_backend:
+      primary: "llama.cpp"
+      quantization: "Q4_K_M"
+      max_model_params: "3B"    # Limited by CPU speed
+      cpu_threads: 8
+
+    agents:
+      max_concurrent: 2
+      recommended_composition:
+        researcher: 1
+        teacher: 1
+        critic: 0
+        distiller: 0
+        specialist: 0
+
+    memory_limits:
+      hot_cache_entries: 200
+      warm_db_size_mb: 512
+      embedding_cache_mb: 128
+
+    cloudflare_strategy: "heavy"  # Offload to CF for AI tasks
+
+# ============================================================================
+# MULTI-NODE COORDINATION
+# ============================================================================
+
+multi_node:
+  description: |
+    When multiple machines are in the swarm (e.g., Jetson + workstation),
+    they coordinate via a shared knowledge store and message bus.
+
+  coordination_modes:
+    shared_db:
+      description: "All nodes share one SQLite database on network storage"
+      requirements: "NFS or shared filesystem"
+      best_for: "Local LAN setup"
+
+    cloudflare_sync:
+      description: "All nodes sync via CF D1 + R2 (no direct network needed)"
+      requirements: "CF account configured on all nodes"
+      best_for: "Nodes in different locations"
+      sync_interval_seconds: 60
+
+    standalone:
+      description: "Each node runs independently, captain merges manually"
+      requirements: "Nothing"
+      best_for: "Simple single-node setup"
+
+  role_assignment:
+    description: |
+      In a multi-node setup, assign roles by hardware capability.
+    example:
+      jetson_nano:
+        assigned_roles: [researcher]
+        reasoning: "Always-on, low power. Good for monitoring and research."
+      laptop_rtx4050:
+        assigned_roles: [teacher, critic, distiller]
+        reasoning: "When plugged in, handles training data generation."
+      cloud_burst:
+        assigned_roles: [teacher]
+        triggered_by: "When local teacher backlog > 100 messages"
+        reasoning: "Scale out teacher during burst periods."
+
+# ============================================================================
+# SCALER (Dynamic Allocation)
+# ============================================================================
+
+scaler:
+  description: |
+    Within a profile, the scaler adjusts resources based on current workload.
+
+  cpu_allocation:
+    description: "Assign CPU cores to agents dynamically"
+    strategy: "fair share with priority override"
+    formula: "cores_per_agent = max(1, total_cores / active_agents)"
+
+  gpu_memory_allocation:
+    description: "Manage VRAM budget across models"
+    strategy: "lazy loading + eviction"
+    eviction_policy: LRU
+    buffer_pct: 0.1  # Keep 10% VRAM free for system
+
+  agent_scaling:
+    description: "Spawn/stop agents based on message queue depth"
+    check_interval_seconds: 60
+    scale_up:
+      condition: "message_queue_depth > scale_up_threshold AND resource_available"
+      cooldown_seconds: 120
+    scale_down:
+      condition: "agent_idle_minutes > scale_down_idle_minutes"
+      cooldown_seconds: 300
+
+# ============================================================================
+# EXAMPLES
+# ============================================================================
+
+examples:
+  detected_laptop:
+    profile: laptop_gpu
+    detected_at: "2026-03-18T08:00:00Z"
+    hardware:
+      gpu_name: "NVIDIA GeForce RTX 4050 Laptop GPU"
+      vram_gb: 6.0
+      ram_gb: 16.0
+      cpu_cores: 12
+      architecture: x86_64
+    settings_applied:
+      max_agents: 4
+      inference_backend: llama.cpp
+      quantization: Q5_K_M
+      cloudflare_strategy: balanced
+
+  detected_nano:
+    profile: nano
+    detected_at: "2026-03-18T08:00:00Z"
+    hardware:
+      device_tree: "NVIDIA Jetson Nano 8GB"
+      vram_gb: 8.0   # Shared
+      unified_memory: true
+      architecture: arm64
+    settings_applied:
+      max_agents: 2
+      inference_backend: llama.cpp
+      quantization: Q4_K_M
+      cloudflare_strategy: heavy

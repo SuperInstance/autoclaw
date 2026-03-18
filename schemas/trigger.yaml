@@ -1,0 +1,383 @@
+# ============================================================================
+# TRIGGER SCHEMA
+# ============================================================================
+# Triggers watch the external world and create tasks when events match.
+# They make the crew reactive to the environment without captain intervention.
+#
+# A trigger has:
+# - A source (where to watch)
+# - A filter (what to watch for)
+# - An action (what to do when matched)
+# - A template (how to create the resulting task)
+#
+# IMPLEMENTATION NOTES FOR HAIKU:
+# - Triggers stored in data/triggers/{id}.yaml
+# - Trigger daemon runs as a separate thread in the main daemon process
+# - Each trigger is checked on its own schedule (poll interval or webhook)
+# - RSS/Atom feeds: polled every poll_interval_minutes
+# - Webhooks: HTTP server listens on configured port
+# - Schedules: cron-style evaluation every minute
+# - File watchers: inotify/polling on specified paths
+# - Sensor monitors: read nvidia-smi/df/etc on interval
+# ============================================================================
+
+trigger:
+  id:
+    type: integer
+    description: "Monotonically increasing trigger ID"
+    generated: true
+
+  name:
+    type: string
+    max_length: 80
+    description: "Human-readable trigger name"
+    example: "arxiv-ml-papers"
+
+  enabled:
+    type: boolean
+    default: true
+    description: "Whether this trigger is active"
+
+  type:
+    type: enum
+    values:
+      - rss           # Watch an RSS/Atom feed
+      - webhook       # Listen for incoming HTTP requests
+      - schedule      # Fire on a cron schedule
+      - file_watch    # Watch a file or directory for changes
+      - sensor        # Monitor system sensors (GPU temp, disk, memory)
+      - command       # Run a shell command, trigger on non-empty output
+    description: "What kind of external source to watch"
+
+  # --- Source configuration (depends on type) ---
+  source:
+    type: object
+    description: "How to connect to the external source"
+    fields:
+      # For type: rss
+      url:
+        type: string
+        nullable: true
+        description: "RSS/Atom feed URL"
+        example: "https://arxiv.org/rss/cs.LG"
+
+      # For type: webhook
+      endpoint:
+        type: string
+        nullable: true
+        description: "HTTP endpoint path (e.g., '/trigger/deploy')"
+
+      # For type: schedule
+      cron:
+        type: string
+        nullable: true
+        description: "Cron expression (minute hour day month weekday)"
+        example: "0 6 * * 1"  # Monday 6am
+
+      # For type: file_watch
+      path:
+        type: string
+        nullable: true
+        description: "File or directory path to watch"
+        example: "/home/user/papers/"
+
+      # For type: sensor
+      sensor:
+        type: enum
+        nullable: true
+        values: [gpu_temp, gpu_memory, gpu_utilization, disk_usage, cpu_load]
+
+      # For type: command
+      command:
+        type: string
+        nullable: true
+        description: "Shell command to execute"
+        example: "curl -s https://api.example.com/status | jq '.alerts[]'"
+
+      # For all types
+      poll_interval_minutes:
+        type: integer
+        default: 60
+        description: |
+          How often to check the source (for poll-based triggers).
+          RSS: default 60 (hourly)
+          Sensor: default 1 (every minute)
+          Command: default 5
+          File watch: uses OS notifications, falls back to polling every 5s
+
+  # --- Filter (what to match) ---
+  filter:
+    type: object
+    description: "Rules for when this trigger should fire"
+    fields:
+      # Text matching (for RSS, webhook, command, file_watch)
+      keywords:
+        type: list
+        items:
+          type: string
+        default: []
+        description: |
+          If non-empty, trigger only fires when content matches ANY keyword.
+          Case-insensitive. Supports regex patterns.
+        example: ["transformer", "attention", "optimization", "learning rate"]
+
+      exclude_keywords:
+        type: list
+        items:
+          type: string
+        default: []
+        description: "If content matches any of these, do NOT fire"
+        example: ["survey", "review paper", "position paper"]
+
+      # Threshold (for sensors)
+      threshold:
+        type: object
+        nullable: true
+        fields:
+          operator:
+            type: enum
+            values: [">", "<", ">=", "<=", "==", "!="]
+          value:
+            type: float
+        description: "For sensor triggers: fire when sensor {operator} {value}"
+        example:
+          operator: ">"
+          value: 85  # GPU temp > 85°C
+
+      # Rate limiting
+      max_fires_per_day:
+        type: integer
+        default: 10
+        description: "Maximum number of times this trigger can fire per day"
+
+      cooldown_minutes:
+        type: integer
+        default: 30
+        description: "Minimum minutes between fires (prevents spamming)"
+
+  # --- Action (what to do when fired) ---
+  action:
+    type: enum
+    values:
+      - create_task     # Create a new task on the board
+      - notify_captain  # Send notification without creating task
+      - throttle        # Reduce GPU usage (for sensor triggers)
+      - pause_current   # Pause current task (emergency use)
+      - run_command      # Execute a shell command
+    description: "What happens when the trigger fires"
+
+  # --- Task Template (for action: create_task) ---
+  task_template:
+    type: object
+    nullable: true
+    description: |
+      Template for the task to create. Uses {placeholders} that get
+      filled from the trigger event context.
+
+      Available placeholders:
+        {title}       - Title/headline from the source
+        {url}         - URL of the source item
+        {content}     - Full content/description
+        {summary}     - Brief summary (first 200 chars)
+        {source_name} - Name of this trigger
+        {timestamp}   - When the event occurred
+        {sensor_value} - For sensors: the value that triggered
+    fields:
+      title:
+        type: string
+        description: "Task title template"
+        example: "Review: '{title}' (via {source_name})"
+      description:
+        type: string
+        description: "Task description template"
+        example: |
+          Trigger '{source_name}' detected relevant content:
+          Title: {title}
+          URL: {url}
+          Summary: {summary}
+
+          Assess relevance to current work. If actionable, create follow-up experiment.
+      type:
+        type: string
+        default: "triggered"
+      priority:
+        type: integer
+        default: 4
+      tags:
+        type: list
+        items:
+          type: string
+        default: []
+        example: ["arxiv", "paper-review"]
+
+  # --- Notification Template (for action: notify_captain) ---
+  notification_template:
+    type: object
+    nullable: true
+    fields:
+      severity:
+        type: enum
+        values: [info, important, urgent]
+        default: info
+      title:
+        type: string
+      body:
+        type: string
+
+  # --- Command (for action: run_command) ---
+  action_command:
+    type: string
+    nullable: true
+    description: "Shell command to run when trigger fires (for action: run_command)"
+
+  # --- Lifecycle ---
+  created_at:
+    type: datetime
+    generated: true
+
+  last_checked:
+    type: datetime
+    nullable: true
+    description: "When this trigger was last polled/checked"
+
+  last_fired:
+    type: datetime
+    nullable: true
+    description: "When this trigger last created a task/notification"
+
+  fires_today:
+    type: integer
+    default: 0
+    description: "Number of times fired today (resets at midnight UTC)"
+
+  total_fires:
+    type: integer
+    default: 0
+
+# --- EXAMPLE TRIGGERS ---
+
+examples:
+  arxiv_watcher:
+    id: 1
+    name: "arxiv-ml-papers"
+    enabled: true
+    type: rss
+    source:
+      url: "https://arxiv.org/rss/cs.LG"
+      poll_interval_minutes: 120  # Every 2 hours
+    filter:
+      keywords: ["transformer", "attention mechanism", "learning rate", "optimizer", "training dynamics"]
+      exclude_keywords: ["survey", "benchmark only"]
+      max_fires_per_day: 5
+      cooldown_minutes: 60
+    action: create_task
+    task_template:
+      title: "Review paper: '{title}'"
+      description: |
+        arxiv paper detected by trigger '{source_name}':
+        Title: {title}
+        URL: {url}
+        Abstract: {summary}
+
+        Task: Read abstract, assess relevance to current experiments.
+        If relevant: Create follow-up experiment task.
+        If not relevant: Complete with brief note on why.
+      type: triggered
+      priority: 5
+      tags: ["arxiv", "paper-review", "auto-triggered"]
+    created_at: "2026-03-15T00:00:00Z"
+    last_checked: "2026-03-18T14:00:00Z"
+    last_fired: "2026-03-18T14:22:00Z"
+    fires_today: 2
+    total_fires: 11
+
+  gpu_temperature_monitor:
+    id: 2
+    name: "gpu-overtemp"
+    enabled: true
+    type: sensor
+    source:
+      sensor: gpu_temp
+      poll_interval_minutes: 1
+    filter:
+      threshold:
+        operator: ">"
+        value: 85
+      cooldown_minutes: 10
+    action: throttle
+    notification_template:
+      severity: urgent
+      title: "GPU temperature warning: {sensor_value}°C"
+      body: "GPU exceeded 85°C threshold. Throttling batch size to reduce temperature."
+    created_at: "2026-03-15T00:00:00Z"
+
+  weekly_summary:
+    id: 3
+    name: "weekly-review"
+    enabled: true
+    type: schedule
+    source:
+      cron: "0 18 * * 5"  # Friday 6pm UTC
+    filter:
+      max_fires_per_day: 1
+    action: create_task
+    task_template:
+      title: "Weekly review: summarize findings from this week"
+      description: |
+        Scheduled weekly review.
+        - Compile all findings from the past 7 days
+        - Identify the top 3-5 most significant discoveries
+        - Generate a summary report for the captain
+        - Suggest next week's research priorities
+        - Archive completed experiment data to warm storage
+      type: maintenance
+      priority: 3
+      tags: ["weekly-review", "scheduled"]
+    created_at: "2026-03-15T00:00:00Z"
+
+  disk_space_monitor:
+    id: 4
+    name: "disk-space-low"
+    enabled: true
+    type: sensor
+    source:
+      sensor: disk_usage
+      poll_interval_minutes: 5
+    filter:
+      threshold:
+        operator: ">"
+        value: 85  # 85% disk usage
+      cooldown_minutes: 60
+    action: create_task
+    task_template:
+      title: "Maintenance: disk space at {sensor_value}% — archive old experiments"
+      description: |
+        Disk usage exceeded 85% threshold.
+        - Archive experiments older than 14 days to cold storage
+        - Remove cached model checkpoints for non-best experiments
+        - Compact git history if possible
+        - Report freed space
+      type: maintenance
+      priority: 3
+      tags: ["disk-space", "maintenance", "auto-triggered"]
+    created_at: "2026-03-15T00:00:00Z"
+
+  news_feed:
+    id: 5
+    name: "ml-news"
+    enabled: true
+    type: rss
+    source:
+      url: "https://news.ycombinator.com/rss"
+      poll_interval_minutes: 180  # Every 3 hours
+    filter:
+      keywords: ["GPT", "LLM training", "CUDA", "transformer", "neural network"]
+      exclude_keywords: ["hiring", "startup", "funding"]
+      max_fires_per_day: 3
+      cooldown_minutes: 120
+    action: notify_captain
+    notification_template:
+      severity: info
+      title: "ML News: {title}"
+      body: "{summary}\n\nURL: {url}"
+    created_at: "2026-03-15T00:00:00Z"
