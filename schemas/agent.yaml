@@ -1,0 +1,511 @@
+# ============================================================================
+# AGENT SCHEMA
+# ============================================================================
+# Defines the agent model for the multi-agent swarm.
+#
+# Agents are autonomous workers with specialized roles. They run in parallel,
+# communicate via the message bus, and share knowledge through the knowledge
+# store. Each agent has:
+#   - A role (researcher, teacher, critic, distiller, specialist)
+#   - A process/thread it runs in
+#   - Access to message bus (pub/sub)
+#   - Access to knowledge store (read/write by tier)
+#   - A Cloudflare credit budget allocation
+#   - A hardware-appropriate inference backend
+#
+# IMPLEMENTATION NOTES:
+# - Agents in crew/agents/{role}.py inherit from crew/agents/base.py
+# - AgentPool in crew/agents/pool.py manages spawn/health/scale
+# - All agent state persists to data/agents/{id}/state.yaml
+# - Agents register in data/agents/registry.yaml on start
+# ============================================================================
+
+agent:
+  id:
+    type: string
+    pattern: "{role}_{instance_number}"
+    example: "researcher_1"
+    description: "Unique agent identifier"
+
+  role:
+    type: enum
+    values:
+      - researcher    # Gathers information from external sources
+      - teacher       # Generates training data from knowledge
+      - critic        # Challenges assumptions, finds weaknesses
+      - distiller     # Synthesizes knowledge from multiple sources
+      - specialist    # Fast domain inference using fine-tuned models
+      - coordinator   # (future) Manages other agents in sub-swarms
+    description: "Agent's primary function"
+
+  status:
+    type: enum
+    values:
+      - idle          # Waiting for work
+      - working       # Actively processing a message
+      - paused        # Paused by captain
+      - error         # Hit unrecoverable error, awaiting restart
+      - stopped       # Gracefully stopped
+    default: idle
+
+  hardware_profile:
+    type: string
+    description: "Hardware profile this agent runs on (inherited from detector)"
+    example: "laptop_gpu"
+
+  # --- Capabilities (what this agent can do) ---
+  capabilities:
+    type: list
+    items:
+      type: enum
+      values:
+        - web_search          # DuckDuckGo / SerpAPI internet search
+        - rss_fetch           # RSS/Atom feed consumption
+        - llm_query           # Call external LLM APIs
+        - local_inference     # Run local models (llama.cpp/vllm)
+        - code_search         # Search GitHub/HuggingFace
+        - paper_fetch         # Download and parse arxiv PDFs
+        - qa_generation       # Create Q&A from source text
+        - instruction_tuning  # Create (instruction, response) pairs
+        - socratic_dialogue   # Multi-turn exploratory dialogue
+        - fact_check          # Verify claims against sources
+        - devil_advocate      # Generate counter-arguments
+        - consistency_check   # Find contradictions in knowledge
+        - quality_score       # Rate training data quality
+        - knowledge_synthesis # Combine multiple sources
+        - compression         # Summarize to key points
+        - embedding_gen       # Generate vector embeddings
+        - lora_build          # Build LoRA training datasets
+        - cf_workers_ai       # Use Cloudflare Workers AI
+    description: "List of capabilities this agent instance has"
+
+  # --- Resource limits ---
+  resource_limits:
+    type: object
+    fields:
+      max_threads:
+        type: integer
+        default: 2
+        description: "Max concurrent operations within this agent"
+      max_memory_mb:
+        type: integer
+        default: 512
+        description: "Memory budget for this agent"
+      cf_budget_pct:
+        type: float
+        default: 0.25
+        description: "Share of Cloudflare daily credits (0.0-1.0)"
+      max_llm_calls_per_hour:
+        type: integer
+        default: 100
+      max_web_searches_per_hour:
+        type: integer
+        default: 30
+
+  # --- Lifecycle ---
+  created_at:
+    type: datetime
+    generated: true
+  last_active:
+    type: datetime
+    nullable: true
+  messages_processed:
+    type: integer
+    default: 0
+  errors_count:
+    type: integer
+    default: 0
+
+  # --- Current work ---
+  current_task:
+    type: object
+    nullable: true
+    fields:
+      message_id:
+        type: integer
+      description:
+        type: string
+      started_at:
+        type: datetime
+      estimated_completion:
+        type: datetime
+        nullable: true
+
+# ============================================================================
+# MESSAGE SCHEMA
+# ============================================================================
+# Inter-agent messages. Persisted in SQLite for durability.
+
+message:
+  id:
+    type: integer
+    generated: true
+    description: "Monotonically increasing message ID"
+
+  from_agent:
+    type: string
+    description: "Sender agent ID, or 'daemon' or 'captain'"
+    example: "researcher_1"
+
+  to_agent:
+    type: string
+    description: |
+      Recipient agent ID, role group, or special targets:
+        'broadcast'      — All agents receive
+        'any_researcher' — Any available researcher picks it up
+        'any_teacher'    — Any available teacher picks it up
+        'distiller'      — The distiller pool
+        'daemon'         — Main daemon process
+    example: "any_teacher"
+
+  type:
+    type: enum
+    values:
+      - task_request      # "Please do this work"
+      - result            # "Here's what I found"
+      - challenge         # "I disagree with this result because..."
+      - knowledge         # "Please store this in the knowledge base"
+      - heartbeat         # "I'm alive, here's my status"
+      - credit_alert      # "Cloudflare budget at X%"
+      - study_request     # "I need research on this topic"
+      - training_data     # "Here's training data to add to dataset"
+      - quality_rating    # "I rated this training data: {score}"
+      - summary_ready     # "Daily/weekly summary is ready"
+      - error             # "I encountered an error on message {id}"
+    description: "Message type determines payload structure"
+
+  priority:
+    type: integer
+    min: 1
+    max: 10
+    default: 5
+    description: "Lower = higher priority. Matches task priority scale."
+
+  payload:
+    type: object
+    description: |
+      Type-specific content. See payload schemas below.
+      Always includes at minimum: {type, description}
+
+  status:
+    type: enum
+    values:
+      - pending     # Waiting to be delivered
+      - delivered   # Received by target agent
+      - processing  # Agent is working on it
+      - completed   # Agent finished, result sent back
+      - failed      # Agent could not complete
+      - expired     # TTL passed without processing
+    default: pending
+
+  created_at:
+    type: datetime
+    generated: true
+
+  delivered_at:
+    type: datetime
+    nullable: true
+
+  completed_at:
+    type: datetime
+    nullable: true
+
+  expires_at:
+    type: datetime
+    nullable: true
+    description: "If set, message is discarded after this time"
+
+  parent_message_id:
+    type: integer
+    nullable: true
+    description: "For replies/follow-ups: which message spawned this one"
+
+  tags:
+    type: list
+    items:
+      type: string
+    default: []
+    description: "Topic tags for filtering (e.g. 'learning-rate', 'arxiv')"
+
+# ============================================================================
+# PAYLOAD SCHEMAS (by message type)
+# ============================================================================
+
+payload_schemas:
+
+  task_request:
+    description:
+      type: string
+      required: true
+      description: "What needs to be done"
+      example: "Research recent transformer optimization techniques from arxiv"
+    topic:
+      type: string
+      description: "Primary research topic"
+      example: "transformer optimization learning rate"
+    context:
+      type: string
+      nullable: true
+      description: "Background context to help the agent"
+    source_urls:
+      type: list
+      items:
+        type: string
+      default: []
+      description: "Starting URLs if known"
+    max_depth:
+      type: integer
+      default: 2
+      description: "How deep to follow links/citations"
+    target_format:
+      type: enum
+      values: [raw, structured, training_data, knowledge_entry]
+      default: structured
+    linked_task_id:
+      type: integer
+      nullable: true
+      description: "Task board ID this research supports"
+
+  result:
+    description:
+      type: string
+      required: true
+    summary:
+      type: string
+      description: "Brief summary of findings (< 500 chars)"
+    content:
+      type: object
+      description: "Full findings (format depends on target_format)"
+    sources:
+      type: list
+      items:
+        type: string
+      default: []
+    confidence:
+      type: enum
+      values: [low, medium, high, very_high]
+      default: medium
+    quality_score:
+      type: float
+      nullable: true
+      description: "0.0-1.0 quality rating (if scored by critic)"
+    knowledge_entries:
+      type: list
+      items:
+        type: integer
+      default: []
+      description: "IDs of knowledge entries created from this result"
+
+  challenge:
+    challenges:
+      type: list
+      items:
+        type: string
+      description: "List of specific challenges to the result"
+    counter_evidence:
+      type: list
+      items:
+        type: string
+      description: "Sources that contradict the result"
+    severity:
+      type: enum
+      values: [minor, moderate, major, fatal]
+      description: "How serious the challenge is"
+    recommendation:
+      type: string
+      description: "What should be done: accept, revise, reject, verify"
+
+  knowledge:
+    entry:
+      type: object
+      description: "Full knowledge entry (see schemas/knowledge.yaml)"
+    tier:
+      type: enum
+      values: [hot, warm]
+      default: hot
+      description: "Which tier to write to initially"
+
+  training_data:
+    format:
+      type: enum
+      values: [qa_pair, instruction_response, dialogue, completion]
+      description: "Training data format"
+    examples:
+      type: list
+      items:
+        type: object
+      description: "List of training examples"
+    source_topic:
+      type: string
+    quality_estimate:
+      type: float
+      description: "0.0-1.0 self-estimated quality"
+    language_model:
+      type: string
+      description: "Which model generated this data (for tracking)"
+    dataset_tag:
+      type: string
+      description: "Tag for grouping into a dataset"
+      example: "lr-theory-2026-03"
+
+  credit_alert:
+    service:
+      type: enum
+      values: [workers_ai, d1, r2, kv]
+    daily_pct_used:
+      type: float
+      description: "0.0-1.0 of daily budget consumed"
+    monthly_pct_used:
+      type: float
+    action:
+      type: enum
+      values: [warn, throttle, pause, end_of_day_burn]
+    remaining_neurons:
+      type: integer
+      nullable: true
+
+# ============================================================================
+# AGENT POOL CONFIGURATION
+# ============================================================================
+
+agent_pool_config:
+  description: |
+    Defines how many agents of each type to spawn.
+    The pool manager spawns, monitors, and auto-scales agents.
+
+  composition:
+    type: object
+    description: "Number of agents per role. Profile adjusts these defaults."
+    fields:
+      researcher:
+        type: integer
+        default: 1
+        description: "Agents that search the web and query LLMs"
+      teacher:
+        type: integer
+        default: 1
+        description: "Agents that generate training data"
+      critic:
+        type: integer
+        default: 1
+        description: "Agents that challenge and quality-check"
+      distiller:
+        type: integer
+        default: 1
+        description: "Agents that synthesize knowledge"
+      specialist:
+        type: integer
+        default: 0
+        description: "Inference specialists (require trained LoRA)"
+
+  scaling:
+    type: object
+    fields:
+      auto_scale:
+        type: boolean
+        default: false
+        description: "Whether to auto-scale agent count based on queue depth"
+      scale_up_threshold:
+        type: integer
+        default: 10
+        description: "Messages in queue before spawning additional agent"
+      scale_down_idle_minutes:
+        type: integer
+        default: 30
+        description: "Minutes of idleness before stopping an extra agent"
+      max_agents_per_role:
+        type: integer
+        default: 4
+
+  health:
+    type: object
+    fields:
+      heartbeat_interval_seconds:
+        type: integer
+        default: 30
+      max_missed_heartbeats:
+        type: integer
+        default: 3
+        description: "Restart agent after this many missed heartbeats"
+      restart_backoff_seconds:
+        type: integer
+        default: 30
+
+# ============================================================================
+# EXAMPLES
+# ============================================================================
+
+examples:
+  researcher_agent:
+    id: "researcher_1"
+    role: researcher
+    status: working
+    capabilities: [web_search, rss_fetch, llm_query, paper_fetch]
+    resource_limits:
+      max_threads: 2
+      max_memory_mb: 512
+      cf_budget_pct: 0.20
+      max_llm_calls_per_hour: 60
+      max_web_searches_per_hour: 30
+    current_task:
+      message_id: 142
+      description: "Research: transformer learning rate warmup strategies from arxiv 2024-2026"
+      started_at: "2026-03-18T14:30:00Z"
+    messages_processed: 47
+    created_at: "2026-03-17T08:00:00Z"
+
+  teacher_agent:
+    id: "teacher_1"
+    role: teacher
+    status: working
+    capabilities: [llm_query, qa_generation, instruction_tuning, socratic_dialogue, cf_workers_ai]
+    resource_limits:
+      max_threads: 1
+      max_memory_mb: 1024
+      cf_budget_pct: 0.40
+      max_llm_calls_per_hour: 200
+    current_task:
+      message_id: 143
+      description: "Generate 50 Q&A pairs about optimal LR with cosine annealing"
+      started_at: "2026-03-18T14:35:00Z"
+    messages_processed: 32
+
+  research_task_message:
+    id: 142
+    from_agent: "daemon"
+    to_agent: "any_researcher"
+    type: task_request
+    priority: 4
+    payload:
+      description: "Research warmup strategies for transformer LR"
+      topic: "learning rate warmup transformers"
+      context: "We found LR=0.005 optimal locally. Want to understand theory."
+      target_format: structured
+      linked_task_id: 43
+    status: processing
+    created_at: "2026-03-18T14:29:00Z"
+    delivered_at: "2026-03-18T14:30:00Z"
+    tags: ["learning-rate", "warmup", "theory"]
+
+  training_data_message:
+    id: 147
+    from_agent: "teacher_1"
+    to_agent: "daemon"
+    type: training_data
+    priority: 6
+    payload:
+      format: qa_pair
+      examples:
+        - question: "Why does warmup prevent early training instability?"
+          answer: "During warmup, the learning rate starts very low (near zero) and increases gradually. This prevents large gradient updates in early training when the model weights are randomly initialized and far from any useful representation. Without warmup, the first few batches can cause large weight updates in random directions, effectively 'poisoning' the model's early trajectory."
+          source: "synthesized from 3 arxiv papers"
+          difficulty: medium
+        - question: "What is the sqrt(batch_size) warmup rule?"
+          answer: "The sqrt(batch_size) warmup rule suggests that optimal warmup steps scale as the square root of the batch size. For batch_size=32, use ~5 warmup steps; for batch_size=512, use ~22 steps. This accounts for the higher gradient variance with smaller batches."
+          source: "Smith et al. 2026"
+          difficulty: hard
+      source_topic: "learning-rate-warmup"
+      quality_estimate: 0.85
+      language_model: "claude-haiku-4-5-20251001"
+      dataset_tag: "lr-theory-2026-03"
+    created_at: "2026-03-18T15:20:00Z"
