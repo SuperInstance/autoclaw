@@ -24,6 +24,7 @@ import yaml
 from crew.scheduler import Scheduler, Task
 from crew.runner import ExperimentRunner, ExperimentParams
 from crew.brain import CrewBrain
+from crew.daemon_integration import get_daemon_integration
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +146,7 @@ class CrewDaemon:
         self.scheduler = Scheduler(Path("data/tasks"))
         self.runner = ExperimentRunner(self.config.experiments)
         self.brain = CrewBrain(self.config.llm)
+        self.integration = get_daemon_integration()  # Phase A integration
 
         # State
         self.state_file = Path("data/crew/state.yaml")
@@ -166,6 +168,7 @@ class CrewDaemon:
         # Start background threads
         self._start_heartbeat_thread()
         self._start_command_listener_thread()
+        self.integration.start_background_services()  # Start triggers, etc
 
         logger.info("Crew daemon running. Mode: working")
 
@@ -228,6 +231,19 @@ class CrewDaemon:
         self.scheduler.activate_task(task)
         self.current_task = task
 
+        # Start context handoff tracking
+        handoff_context = self.integration.start_context_handoff(task.id)
+        if handoff_context:
+            logger.info(f"Resuming task from previous generation: {handoff_context[:200]}...")
+
+        # Check if task is redundant
+        planning_hints = self.integration.enhance_experiment_planning(task)
+        if planning_hints.get('skip'):
+            logger.info(f"Task #{task.id} appears redundant - skipping")
+            self.scheduler.cancel_task(task)
+            self.current_task = None
+            return
+
         # Plan experiments
         if not task.experiment:
             logger.warning(f"Task #{task.id} has no experiment spec")
@@ -235,6 +251,7 @@ class CrewDaemon:
 
         plan = self.brain.plan_experiments(task, knowledge=[])
         logger.info(f"Planning {len(plan.experiments)} experiments")
+        self.integration.update_context_usage(500)  # Estimate for planning call
 
         # Run experiments
         results = []
@@ -243,8 +260,13 @@ class CrewDaemon:
                 logger.info("Shutdown requested, stopping experiments")
                 break
 
+            # Refine parameters using knowledge
+            refined_params = self.integration.refine_parameters_with_knowledge(
+                task, exp["parameters"]
+            )
+
             params = ExperimentParams(
-                parameters=exp["parameters"],
+                parameters=refined_params,
                 rationale=exp.get("rationale", ""),
                 index=len(results),
             )
@@ -259,8 +281,32 @@ class CrewDaemon:
             else:
                 logger.error(f"  ✗ Failed: {result.error}")
 
+            # Check if we need to generate context handoff
+            if self.integration.should_generate_handoff():
+                logger.info(f"Context 75% full - generating handoff for task #{task.id}")
+                accomplishments = [
+                    f"Completed {len(results)} experiments",
+                    f"Best metric: {max((r.metric_value for r in results if r.success), default=0)}",
+                ]
+                decisions = [
+                    f"Refined parameters using knowledge base",
+                    f"Tested {len(plan.experiments)} experiment configurations",
+                ]
+                next_steps = [f"Continue with remaining {len(plan.experiments) - len(results)} experiments"]
+                self.integration.generate_handoff(accomplishments, decisions, next_steps)
+
         # Task is done
         if results:
+            # Create knowledge from findings
+            findings = [
+                f"Tested {len(results)} configurations",
+                f"Best metric: {max((r.metric_value for r in results if r.success), default=0)}",
+            ]
+            self.integration.create_knowledge_from_findings(
+                task, findings, len(results),
+                best_metric=max((r.metric_value for r in results if r.success), default=None)
+            )
+
             self.scheduler.complete_task(
                 task,
                 {
@@ -342,45 +388,56 @@ class CrewDaemon:
         # Get completed tasks for context
         completed = self.scheduler.get_completed(limit=10)
 
-        # Ask brain what to study
-        study_topic = self.brain.decide_study_topic(knowledge=[], recent_tasks=completed)
+        # Get follow-up study suggestions from knowledge integration
+        follow_ups = self.integration.suggest_follow_up_studies()
 
-        if study_topic:
+        # If we have follow-up studies, prioritize those
+        if follow_ups:
+            logger.info(f"Found {len(follow_ups)} knowledge-based follow-up studies")
+            study_task = follow_ups[0]
+            study_title = study_task.get('title', 'Knowledge validation study')
+            num_exps = study_task.get('num_experiments', 3)
+            logger.info(f"Study topic (from knowledge): {study_title}")
+        else:
+            # Ask brain what to study
+            study_topic = self.brain.decide_study_topic(knowledge=[], recent_tasks=completed)
+
+            if not study_topic:
+                logger.info("No study topic determined")
+                self.set_mode("idle")
+                return
+
             logger.info(f"Study topic: {study_topic.title}")
             logger.info(f"Reason: {study_topic.reason}")
-
-            # Create a temporary study task (don't add to board permanently)
+            study_title = study_topic.title
             num_exps = study_topic.experiment_plan.get('num_experiments', 3)
 
-            # Run a few quick experiments to explore the topic
-            for i in range(min(num_exps, self.config.tasks.study_max_experiments or 10)):
-                if self.shutdown_requested:
-                    break
+        # Run a few quick experiments to explore the topic
+        for i in range(min(num_exps, self.config.tasks.study_max_experiments or 10)):
+            if self.shutdown_requested:
+                break
 
-                params = {
-                    "study_seed": i,
-                    "learning_rate": 0.001 * (2 ** (i % 3)),
-                }
+            params = {
+                "study_seed": i,
+                "learning_rate": 0.001 * (2 ** (i % 3)),
+            }
 
-                from crew.runner import ExperimentParams
-                exp_params = ExperimentParams(
-                    parameters=params,
-                    rationale=f"Study exploration {i+1}: {study_topic.title}",
-                    index=i,
-                )
+            from crew.runner import ExperimentParams
+            exp_params = ExperimentParams(
+                parameters=params,
+                rationale=f"Study exploration {i+1}: {study_title}",
+                index=i,
+            )
 
-                logger.info(f"Running study experiment {i+1}/{num_exps}")
-                result = self.runner.run_experiment(exp_params, task_id=-1)  # -1 = study, not tied to task
+            logger.info(f"Running study experiment {i+1}/{num_exps}")
+            result = self.runner.run_experiment(exp_params, task_id=-1)  # -1 = study, not tied to task
 
-                if result.success:
-                    logger.info(f"  ✓ Study exp: {result.parameters}")
-                else:
-                    logger.debug(f"  - Study exp failed: {result.error}")
+            if result.success:
+                logger.info(f"  ✓ Study exp: {result.parameters}")
+            else:
+                logger.debug(f"  - Study exp failed: {result.error}")
 
-            logger.info(f"Study session completed: {study_topic.title}")
-        else:
-            logger.info("No study topic determined")
-
+        logger.info(f"Study session completed: {study_title}")
         self.set_mode("idle")
 
     def needs_maintenance(self) -> bool:
@@ -476,6 +533,9 @@ class CrewDaemon:
         """Graceful shutdown."""
         logger.info("Shutting down...")
         self.set_mode("shutting_down")
+
+        # Stop Phase A background services
+        self.integration.stop_background_services()
 
         # Stop background threads
         for thread in self.threads:
@@ -786,6 +846,24 @@ class CrewDaemon:
                 }
             })
 
+        elif command == "get_knowledge":
+            # Get knowledge store stats
+            try:
+                stats = self.integration.get_stats()
+                return json.dumps({
+                    "status": "ok",
+                    "data": {
+                        "knowledge": stats.get('knowledge', {}),
+                        "triggers": stats.get('triggers', {}),
+                        "notifications": stats.get('notifications', {}),
+                    }
+                })
+            except Exception as e:
+                return json.dumps({
+                    "status": "error",
+                    "error": f"Failed to get knowledge stats: {e}"
+                })
+
         elif command == "stop":
             self.shutdown_requested = True
             return json.dumps({
@@ -855,11 +933,15 @@ def _start_swarm(config: "Config"):
     from crew.agents.strategy import StrategyAgent
     from crew.hardware.detector import HardwareDetector
 
+    # Import coordinator
+    from crew.agents.coordinator import CoordinatorAgent
+
     # Register concrete agent classes (core)
     register_agent_class("researcher", ResearcherAgent)
     register_agent_class("teacher", TeacherAgent)
     register_agent_class("critic", CriticAgent)
     register_agent_class("distiller", DistillerAgent)
+    register_agent_class("coordinator", CoordinatorAgent)
 
     # Register concrete agent classes (research & analysis)
     register_agent_class("scientist", ScientistAgent)

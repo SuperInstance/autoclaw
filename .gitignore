@@ -25,3 +25,5 @@ logs/
 
 # Runtime data (task files, knowledge DB, credits, fallback storage)
 data/
+crew/knowledge/*.db
+crew/knowledge/*.db-journal

@@ -1,0 +1,296 @@
+# AutoClaw Configuration Example
+# Copy to data/config.yaml and customize for your environment
+
+# ============================================================================
+# CORE SYSTEM
+# ============================================================================
+
+crew:
+  name: "AutoClaw Research Crew"
+  personality: "balanced"  # balanced | aggressive | conservative
+
+
+# ============================================================================
+# LLM CONFIGURATION
+# ============================================================================
+
+llm:
+  provider: "anthropic"
+  model: "claude-opus-4-6"
+  # Get from https://console.anthropic.com/
+  api_key: "${ANTHROPIC_API_KEY}"
+  # Or set via environment variable before starting daemon:
+  # export ANTHROPIC_API_KEY=sk-...
+  # python -m crew.daemon
+
+
+# ============================================================================
+# KNOWLEDGE STORE
+# ============================================================================
+
+knowledge:
+  # Maximum entries to keep (older entries auto-pruned)
+  max_entries: 500
+
+  # Days before unvalidated entries are removed
+  cleanup_days: 30
+
+  # Enable auto-pruning of old entries
+  auto_cleanup: true
+
+
+# ============================================================================
+# TRIGGERS (Event-Driven Task Creation)
+# ============================================================================
+
+triggers:
+  enabled: true
+  # Default poll interval for all triggers (minutes)
+  default_poll_minutes: 30
+
+  triggers:
+    # Example: Monitor arxiv for ML papers
+    - id: 1
+      name: arxiv_transformers
+      type: RSS
+      source:
+        url: https://arxiv.org/rss/cs.LG
+      filter:
+        keywords: [transformer, attention, bert]
+        # Don't fire more than once per X minutes
+        cooldown_minutes: 60
+        # Max times per day
+        max_fires_per_day: 5
+      action: create_research_task
+      enabled: true
+
+    # Example: Daily maintenance task
+    - id: 2
+      name: daily_maintenance
+      type: Schedule
+      source:
+        # Cron format: minute hour day month dayofweek
+        cron: "0 2 * * *"  # 2 AM every day
+      action: run_maintenance
+      enabled: true
+
+    # Example: Webhook for external events
+    - id: 3
+      name: external_events
+      type: Webhook
+      source:
+        path: /webhook/research
+      filter:
+        # Match on webhook JSON
+        event_type: notification
+      action: process_webhook
+      enabled: false
+
+
+# ============================================================================
+# NOTIFICATIONS (Multi-Channel Delivery)
+# ============================================================================
+
+notifications:
+  # External channels for delivering notifications
+  external_channels:
+    # Webhook (e.g., to Slack)
+    - type: webhook
+      url: https://hooks.slack.com/services/YOUR/WEBHOOK/URL
+      headers:
+        Authorization: "Bearer token"
+
+    # Email notification
+    - type: email
+      smtp_host: smtp.gmail.com
+      smtp_port: 587
+      smtp_user: your-email@gmail.com
+      smtp_password: "${SMTP_PASSWORD}"
+      sender: autoclaw@gmail.com
+      recipients:
+        - your-email@gmail.com
+        - supervisor@example.com
+
+    # Shell command (e.g., ntfy)
+    - type: command
+      command: "ntfy -p {{severity}} '{{title}}: {{body}}'"
+
+    # Log file
+    - type: file
+      path: data/logs/notifications.log
+
+
+# ============================================================================
+# EXPERIMENTS
+# ============================================================================
+
+experiments:
+  # Time budget per experiment (seconds)
+  time_budget_seconds: 300
+
+  # Whether to commit results to git automatically
+  git_commit_each: false
+
+  # Which checkpoints to keep: best_only | last_n | all
+  keep_checkpoints: best_only
+
+  # Number of checkpoints to keep if last_n
+  num_checkpoints: 5
+
+
+# ============================================================================
+# ADAPTIVE SCHEDULING
+# ============================================================================
+
+adaptive:
+  enabled: true
+
+  # Thompson sampling: how many samples to draw per decision
+  # Higher = slower but better decisions
+  thompson_samples_per_decision: 100
+
+
+# ============================================================================
+# FLOWSTATE (Sandboxed Exploration)
+# ============================================================================
+
+flowstate:
+  enabled: true
+
+  # Default sandbox budgets (can be overridden per sandbox)
+  default_budget_gb: 10.0
+  default_budget_hours: 4.0
+
+  # Maximum concurrent sandboxes
+  max_concurrent: 5
+
+
+# ============================================================================
+# HARDWARE DETECTION
+# ============================================================================
+
+hardware:
+  # Auto-detect if null, or specify:
+  # "gpu" | "cpu" | "tpu" | "mixed"
+  profile: null
+
+  # GPU settings
+  gpu:
+    enabled: true
+    device: 0
+    memory_fraction: 0.9
+
+  # CPU settings
+  cpu:
+    num_workers: 4
+    max_workers: 8
+
+
+# ============================================================================
+# DAEMON SETTINGS
+# ============================================================================
+
+daemon:
+  # Logging
+  log_level: info  # debug | info | warning | error | critical
+  log_file: data/logs/autoclaw.log
+  log_format: json  # json | text
+
+  # Graceful shutdown timeout (seconds)
+  shutdown_timeout: 30
+
+  # Health check interval (seconds)
+  health_check_interval: 30
+
+  # Main loop sleep when idle (seconds)
+  idle_sleep: 5
+
+
+# ============================================================================
+# MESSAGE BUS
+# ============================================================================
+
+message_bus:
+  # SQLite database path (can be remote eventually)
+  database: data/message_bus.db
+
+  # Message TTL: auto-delete after X hours (null = never)
+  default_ttl_hours: 24
+
+  # Max messages to keep
+  max_messages: 10000
+
+  # Cleanup old messages automatically
+  auto_cleanup: true
+
+
+# ============================================================================
+# ERROR HANDLING
+# ============================================================================
+
+error_handling:
+  # Enable error auditing
+  enable_audit: true
+
+  # Keep last N errors
+  audit_size: 1000
+
+  # Send critical errors to notifications
+  notify_critical: true
+
+  # Circuit breaker: fail threshold
+  circuit_breaker_failures: 5
+
+  # Circuit breaker: recovery timeout (seconds)
+  circuit_breaker_recovery_seconds: 60
+
+
+# ============================================================================
+# PERFORMANCE
+# ============================================================================
+
+performance:
+  # Database connection pool size
+  db_pool_size: 5
+  db_max_overflow: 10
+
+  # Knowledge query cache size
+  knowledge_cache_size: 100
+
+  # Enable query profiling
+  profile_queries: false
+
+
+# ============================================================================
+# SECURITY
+# ============================================================================
+
+security:
+  # API key validation
+  validate_api_keys: true
+
+  # Rate limiting
+  enable_rate_limiting: true
+  rate_limit_per_minute: 100
+
+  # Input validation
+  validate_inputs: true
+
+  # Audit logging
+  enable_audit_log: true
+  audit_log_file: data/logs/audit.log
+
+
+# ============================================================================
+# FEATURES
+# ============================================================================
+
+features:
+  # Enable multi-agent swarm mode
+  swarm_mode: false
+
+  # Enable distributed coordination (requires multiple daemons)
+  distributed: false
+
+  # Enable experimental features
+  experimental: false
