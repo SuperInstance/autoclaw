@@ -13,6 +13,7 @@ Max 500 entries. When full, oldest low-confidence entries are pruned.
 
 import yaml
 import logging
+import threading
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
@@ -96,6 +97,7 @@ class KnowledgeStore:
         """Initialize knowledge store."""
         self.entries: Dict[int, KnowledgeEntry] = {}
         self.next_id = 1
+        self._lock = threading.Lock()
         self._ensure_dir()
         self.load()
 
@@ -151,36 +153,36 @@ class KnowledgeStore:
         conditions: Optional[str] = None,
     ) -> KnowledgeEntry:
         """Create a new knowledge entry."""
+        with self._lock:
+            # Auto-determine confidence based on evidence
+            confidence = self._score_confidence(
+                experiments_supporting,
+                experiments_contradicting
+            )
 
-        # Auto-determine confidence based on evidence
-        confidence = self._score_confidence(
-            experiments_supporting,
-            experiments_contradicting
-        )
+            entry = KnowledgeEntry(
+                id=self.next_id,
+                insight=insight,
+                category=category,
+                tags=tags,
+                source_task_ids=source_task_ids,
+                experiments_supporting=experiments_supporting,
+                experiments_contradicting=experiments_contradicting,
+                key_commits=key_commits or [],
+                confidence=confidence,
+                conditions=conditions,
+            )
 
-        entry = KnowledgeEntry(
-            id=self.next_id,
-            insight=insight,
-            category=category,
-            tags=tags,
-            source_task_ids=source_task_ids,
-            experiments_supporting=experiments_supporting,
-            experiments_contradicting=experiments_contradicting,
-            key_commits=key_commits or [],
-            confidence=confidence,
-            conditions=conditions,
-        )
+            self.entries[entry.id] = entry
+            self.next_id += 1
 
-        self.entries[entry.id] = entry
-        self.next_id += 1
+            # Check if we need to prune
+            if len(self.entries) > self.MAX_ENTRIES:
+                self._prune_entries()
 
-        # Check if we need to prune
-        if len(self.entries) > self.MAX_ENTRIES:
-            self._prune_entries()
-
-        self.save()
-        logger.info(f"Created knowledge entry #{entry.id}: {insight[:50]}...")
-        return entry
+            self.save()
+            logger.info(f"Created knowledge entry #{entry.id}: {insight[:50]}...")
+            return entry
 
     def _score_confidence(self, supporting: int, contradicting: int) -> ConfidenceLevel:
         """Determine confidence level based on evidence."""
@@ -203,27 +205,28 @@ class KnowledgeStore:
 
     def update(self, entry_id: int, **updates) -> Optional[KnowledgeEntry]:
         """Update a knowledge entry."""
-        if entry_id not in self.entries:
-            logger.warning(f"Knowledge entry #{entry_id} not found")
-            return None
+        with self._lock:
+            if entry_id not in self.entries:
+                logger.warning(f"Knowledge entry #{entry_id} not found")
+                return None
 
-        entry = self.entries[entry_id]
+            entry = self.entries[entry_id]
 
-        # Convert enum updates
-        if 'confidence' in updates and isinstance(updates['confidence'], str):
-            updates['confidence'] = ConfidenceLevel(updates['confidence'])
-        if 'status' in updates and isinstance(updates['status'], str):
-            updates['status'] = KnowledgeStatus(updates['status'])
+            # Convert enum updates
+            if 'confidence' in updates and isinstance(updates['confidence'], str):
+                updates['confidence'] = ConfidenceLevel(updates['confidence'])
+            if 'status' in updates and isinstance(updates['status'], str):
+                updates['status'] = KnowledgeStatus(updates['status'])
 
-        # Apply updates
-        for key, value in updates.items():
-            if hasattr(entry, key):
-                setattr(entry, key, value)
+            # Apply updates
+            for key, value in updates.items():
+                if hasattr(entry, key):
+                    setattr(entry, key, value)
 
-        entry.last_validated = datetime.now(timezone.utc).isoformat()
-        self.save()
-        logger.info(f"Updated knowledge entry #{entry.id}")
-        return entry
+            entry.last_validated = datetime.now(timezone.utc).isoformat()
+            self.save()
+            logger.info(f"Updated knowledge entry #{entry.id}")
+            return entry
 
     def query(
         self,
@@ -243,52 +246,54 @@ class KnowledgeStore:
         Returns:
             List of matching entries, sorted by confidence (highest first)
         """
-        results = []
+        with self._lock:
+            results = []
 
-        confidence_levels = {
-            'low': 0,
-            'medium': 1,
-            'high': 2,
-            'very_high': 3,
-        }
-        min_conf_value = confidence_levels.get(min_confidence, -1) if min_confidence else -1
+            confidence_levels = {
+                'low': 0,
+                'medium': 1,
+                'high': 2,
+                'very_high': 3,
+            }
+            min_conf_value = confidence_levels.get(min_confidence, -1) if min_confidence else -1
 
-        for entry in self.entries.values():
-            # Filter by status
-            if status and entry.status.value != status:
-                continue
-
-            # Filter by category
-            if category and entry.category != category:
-                continue
-
-            # Filter by confidence
-            if min_confidence:
-                entry_conf_value = confidence_levels.get(entry.confidence.value, 0)
-                if entry_conf_value < min_conf_value:
+            for entry in self.entries.values():
+                # Filter by status
+                if status and entry.status.value != status:
                     continue
 
-            # Filter by tags (ANY match)
-            if tags:
-                if not any(tag in entry.tags for tag in tags):
+                # Filter by category
+                if category and entry.category != category:
                     continue
 
-            results.append(entry)
+                # Filter by confidence
+                if min_confidence:
+                    entry_conf_value = confidence_levels.get(entry.confidence.value, 0)
+                    if entry_conf_value < min_conf_value:
+                        continue
 
-        # Sort by confidence (highest first), then by creation date (newest first)
-        confidence_order = {'very_high': 4, 'high': 3, 'medium': 2, 'low': 1}
-        results.sort(
-            key=lambda e: (
-                -confidence_order.get(e.confidence.value, 0),
-                -e.id  # Newest first
+                # Filter by tags (ANY match)
+                if tags:
+                    if not any(tag in entry.tags for tag in tags):
+                        continue
+
+                results.append(entry)
+
+            # Sort by confidence (highest first), then by creation date (newest first)
+            confidence_order = {'very_high': 4, 'high': 3, 'medium': 2, 'low': 1}
+            results.sort(
+                key=lambda e: (
+                    -confidence_order.get(e.confidence.value, 0),
+                    -e.id  # Newest first
+                )
             )
-        )
 
-        return results
+            return results
 
     def get(self, entry_id: int) -> Optional[KnowledgeEntry]:
         """Get a specific knowledge entry by ID."""
-        return self.entries.get(entry_id)
+        with self._lock:
+            return self.entries.get(entry_id)
 
     def mark_outdated(self, entry_id: int, replaced_by: int):
         """Mark an entry as outdated, replaced by another."""
@@ -332,23 +337,24 @@ class KnowledgeStore:
 
     def detect_contradictions(self, entry_id: int) -> List[int]:
         """Find other entries that contradict this one."""
-        if entry_id not in self.entries:
-            return []
+        with self._lock:
+            if entry_id not in self.entries:
+                return []
 
-        entry = self.entries[entry_id]
-        contradictions = []
+            entry = self.entries[entry_id]
+            contradictions = []
 
-        for other_entry in self.entries.values():
-            if other_entry.id == entry_id:
-                continue
+            for other_entry in self.entries.values():
+                if other_entry.id == entry_id:
+                    continue
 
-            # Same category and overlapping tags?
-            if entry.category == other_entry.category:
-                if any(tag in other_entry.tags for tag in entry.tags):
-                    if self._are_contradictory(entry.insight, other_entry.insight):
-                        contradictions.append(other_entry.id)
+                # Same category and overlapping tags?
+                if entry.category == other_entry.category:
+                    if any(tag in other_entry.tags for tag in entry.tags):
+                        if self._are_contradictory(entry.insight, other_entry.insight):
+                            contradictions.append(other_entry.id)
 
-        return contradictions
+            return contradictions
 
     def _are_contradictory(self, insight1: str, insight2: str) -> bool:
         """Heuristic check for contradictory insights."""
@@ -389,18 +395,19 @@ class KnowledgeStore:
 
     def stats(self) -> Dict[str, Any]:
         """Get statistics about the knowledge base."""
-        by_confidence = {}
-        by_status = {}
-        by_category = {}
+        with self._lock:
+            by_confidence = {}
+            by_status = {}
+            by_category = {}
 
-        for entry in self.entries.values():
-            by_confidence[entry.confidence.value] = by_confidence.get(entry.confidence.value, 0) + 1
-            by_status[entry.status.value] = by_status.get(entry.status.value, 0) + 1
-            by_category[entry.category] = by_category.get(entry.category, 0) + 1
+            for entry in self.entries.values():
+                by_confidence[entry.confidence.value] = by_confidence.get(entry.confidence.value, 0) + 1
+                by_status[entry.status.value] = by_status.get(entry.status.value, 0) + 1
+                by_category[entry.category] = by_category.get(entry.category, 0) + 1
 
-        return {
-            'total_entries': len(self.entries),
-            'by_confidence': by_confidence,
-            'by_status': by_status,
-            'by_category': by_category,
-        }
+            return {
+                'total_entries': len(self.entries),
+                'by_confidence': by_confidence,
+                'by_status': by_status,
+                'by_category': by_category,
+            }

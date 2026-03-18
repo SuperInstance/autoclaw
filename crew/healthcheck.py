@@ -33,6 +33,10 @@ class ComponentHealth:
         self.latency_ms = latency_ms
         self.timestamp = datetime.now(timezone.utc)
 
+    def __str__(self) -> str:
+        """String representation includes component name."""
+        return f"{self.name}:{self.status.value}"
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         return {
@@ -63,6 +67,7 @@ class HealthChecker:
             ("adaptive_scheduler", self._check_adaptive_scheduler),
             ("flowstate_manager", self._check_flowstate_manager),
             ("error_auditor", self._check_error_auditor),
+            ("disk_space", self._check_disk_space),
         ]
 
     def _check_knowledge_store(self) -> Tuple[HealthStatus, str, float]:
@@ -235,6 +240,40 @@ class HealthChecker:
             else:
                 status = HealthStatus.HEALTHY
                 details = f"{total_errors} total errors"
+
+            latency = (time.time() - start) * 1000
+            return status, details, latency
+
+        except Exception as e:
+            return HealthStatus.UNHEALTHY, str(e), (time.time() - start) * 1000
+
+    def _check_disk_space(self) -> Tuple[HealthStatus, str, float]:
+        """Check disk space availability."""
+        import time
+        import shutil
+        from pathlib import Path
+
+        start = time.time()
+        try:
+            # Check data directory
+            data_dir = Path("data")
+            data_dir.mkdir(exist_ok=True)
+
+            # Get disk usage stats
+            usage = shutil.disk_usage(str(data_dir))
+            available_gb = usage.free / (1024 ** 3)
+            total_gb = usage.total / (1024 ** 3)
+            percent_free = (usage.free / usage.total) * 100
+
+            if available_gb < 1:  # Less than 1GB free
+                status = HealthStatus.UNHEALTHY
+                details = f"Critical: {available_gb:.1f}GB free ({percent_free:.1f}%)"
+            elif available_gb < 5:  # Less than 5GB free
+                status = HealthStatus.DEGRADED
+                details = f"Low: {available_gb:.1f}GB free ({percent_free:.1f}%)"
+            else:
+                status = HealthStatus.HEALTHY
+                details = f"OK: {available_gb:.1f}GB free ({percent_free:.1f}%)"
 
             latency = (time.time() - start) * 1000
             return status, details, latency

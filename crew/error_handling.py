@@ -191,41 +191,72 @@ def handle_error(
     default_return: Any = None,
     severity: ErrorSeverity = ErrorSeverity.ERROR,
     notify: bool = False,
+    max_retries: int = 0,
+    retry_delay: float = 1.0,
 ):
     """Decorator for error handling with graceful degradation.
 
     Usage:
-        @handle_error("knowledge_store", "query", default_return=[])
+        @handle_error("knowledge_store", "query", default_return=[], max_retries=3)
         def query_knowledge(tags):
             ...
+
+    Args:
+        component: Component name for logging
+        operation: Operation name for logging
+        default_return: Value to return on failure (graceful degradation)
+        severity: Error severity level
+        notify: Whether to notify on error
+        max_retries: Number of retry attempts (0 = no retries)
+        retry_delay: Delay between retries in seconds
     """
 
     def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
-            try:
-                return func(*args, **kwargs)
+            last_error = None
+            delay = retry_delay
 
-            except Exception as e:
-                error_context = ErrorContext(
-                    e,
-                    component=component,
-                    operation=operation,
-                    severity=severity,
-                )
+            for attempt in range(1, max_retries + 2):  # +2 to account for initial attempt + retries
+                try:
+                    result = func(*args, **kwargs)
+                    if attempt > 1:
+                        logger.info(
+                            f"{component}.{operation} succeeded on attempt {attempt}"
+                        )
+                    return result
 
-                # Log error with context
-                log_error(error_context)
+                except Exception as e:
+                    last_error = e
 
-                # Optional notification
-                if notify:
-                    notify_error(error_context)
+                    if attempt <= max_retries:
+                        logger.warning(
+                            f"{component}.{operation} failed (attempt {attempt}): {e}"
+                        )
+                        logger.debug(f"Retrying in {delay:.1f}s...")
+                        time.sleep(delay)
+                        delay *= 2  # Exponential backoff
+                    else:
+                        # Final attempt failed
+                        error_context = ErrorContext(
+                            e,
+                            component=component,
+                            operation=operation,
+                            severity=severity,
+                        )
 
-                # Return default value (graceful degradation)
-                logger.debug(
-                    f"Returning default value from {component}.{operation}: {default_return}"
-                )
-                return default_return
+                        # Log error with context
+                        log_error(error_context)
+
+                        # Optional notification
+                        if notify:
+                            notify_error(error_context)
+
+                        # Return default value (graceful degradation)
+                        logger.debug(
+                            f"Returning default value from {component}.{operation}: {default_return}"
+                        )
+                        return default_return
 
         return wrapper
 

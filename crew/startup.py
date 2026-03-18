@@ -136,7 +136,7 @@ def initialize_databases() -> bool:
         # Initialize message bus
         bus = MessageBus()
         depths = bus.get_queue_depths()
-        logger.info(f"Message bus initialized ({depths['by_status'].get('pending', 0)} pending messages)")
+        logger.info(f"Message bus initialized ({depths.get('pending', 0)} pending messages)")
 
         return True
 
