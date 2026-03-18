@@ -4,6 +4,26 @@
 
 ---
 
+## 🚀 Getting Started
+
+**New to AutoCrew?** Start here:
+
+| Guide | Time | For |
+|-------|------|-----|
+| **[ONBOARDING.md](ONBOARDING.md)** | 5 min | Complete beginners - read this first! |
+| **[QUICKSTART.md](QUICKSTART.md)** | 10 min | Quick installation & first commands |
+| **[INSTALL.md](INSTALL.md)** | 5 min | Detailed installation troubleshooting |
+| **[docs/COMPLETE_GUIDE.md](docs/COMPLETE_GUIDE.md)** | 30 min | Full feature documentation |
+
+**Quick Install:**
+```bash
+git clone https://github.com/your-org/autoclaw.git && cd autoclaw
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt && crew health
+```
+
+---
+
 ## The Concept
 
 ```mermaid
