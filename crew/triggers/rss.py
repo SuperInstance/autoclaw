@@ -3,7 +3,12 @@
 Polls RSS feeds and creates tasks when entries match filter criteria.
 """
 
-import feedparser
+try:
+    import feedparser
+except ImportError:
+    # Feedparser may have compatibility issues with newer Python versions
+    feedparser = None
+
 import logging
 import hashlib
 from datetime import datetime, timezone, timedelta
@@ -64,6 +69,10 @@ class RSSHandler:
         Returns:
             List of trigger events matching filter criteria
         """
+        if feedparser is None:
+            logger.warning(f"Trigger #{self.trigger_id}: feedparser not available")
+            return []
+
         if not self.url:
             logger.warning(f"Trigger #{self.trigger_id}: No RSS URL configured")
             return []
