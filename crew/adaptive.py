@@ -27,12 +27,17 @@ Usage:
 
 import logging
 import json
-import numpy as np
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field, asdict
 import yaml
+
+try:
+    import numpy as np
+except ImportError:
+    # Fallback if numpy not available
+    np = None
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +63,12 @@ class BetaDistribution:
 
         Returns: A value between 0 and 1 representing estimated value
         """
-        return np.random.beta(self.alpha, self.beta)
+        if np is not None:
+            return float(np.random.beta(self.alpha, self.beta))
+        else:
+            # Fallback approximation without numpy
+            # Use mean as estimate (biased but works without numpy)
+            return self.mean()
 
     def mean(self) -> float:
         """Get the mean of the distribution."""
