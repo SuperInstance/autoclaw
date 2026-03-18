@@ -308,16 +308,22 @@ class PerformanceMonitor:
 
     def get_stats(self, operation: str) -> Dict[str, float]:
         """Get statistics for an operation."""
-        if operation not in self.metrics:
+        if operation not in self.metrics or not self.metrics[operation]:
             return {}
 
         times = self.metrics[operation]
+        if not times:
+            return {}
+
+        sorted_times = sorted(times)
+        p95_index = max(0, int(len(times) * 0.95) - 1)
+
         return {
             "count": len(times),
             "min_ms": min(times),
             "max_ms": max(times),
             "avg_ms": sum(times) / len(times),
-            "p95_ms": sorted(times)[int(len(times) * 0.95)] if times else 0,
+            "p95_ms": sorted_times[p95_index] if times else 0,
         }
 
     def get_report(self) -> Dict[str, Dict[str, float]]:
