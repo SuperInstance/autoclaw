@@ -933,11 +933,15 @@ def _start_swarm(config: "Config"):
     from crew.agents.strategy import StrategyAgent
     from crew.hardware.detector import HardwareDetector
 
+    # Import coordinator
+    from crew.agents.coordinator import CoordinatorAgent
+
     # Register concrete agent classes (core)
     register_agent_class("researcher", ResearcherAgent)
     register_agent_class("teacher", TeacherAgent)
     register_agent_class("critic", CriticAgent)
     register_agent_class("distiller", DistillerAgent)
+    register_agent_class("coordinator", CoordinatorAgent)
 
     # Register concrete agent classes (research & analysis)
     register_agent_class("scientist", ScientistAgent)
