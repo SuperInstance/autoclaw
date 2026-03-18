@@ -76,8 +76,10 @@ training_example:
           role:
             type: enum
             values: [user, assistant, system]
+            description: "Speaker role in the conversation turn"
           content:
             type: string
+            description: "Text content of this conversation turn"
       description: "Ordered conversation turns (dialogue format)"
 
     # For completion:
@@ -172,10 +174,12 @@ training_example:
   created_at:
     type: datetime
     generated: true
+    description: "When this training example was generated"
 
   scored_at:
     type: datetime
     nullable: true
+    description: "When the Critic agent scored this example"
 
 # ============================================================================
 # DATASET SCHEMA
@@ -209,6 +213,7 @@ dataset:
   # --- Composition ---
   stats:
     type: object
+    description: "Aggregate statistics for this dataset"
     fields:
       total_examples:
         type: integer
@@ -226,6 +231,7 @@ dataset:
           completion: {type: integer, default: 0}
       by_difficulty:
         type: object
+        description: "Example count per difficulty level"
         fields:
           beginner: {type: integer, default: 0}
           intermediate: {type: integer, default: 0}
@@ -243,6 +249,7 @@ dataset:
     fields:
       exported_at:
         type: datetime
+        description: "When the LoRA export was generated"
       example_count:
         type: integer
         description: "Number of examples in the exported JSONL"
@@ -270,13 +277,16 @@ dataset:
       - training      # LoRA training in progress
       - complete      # Specialist model trained and deployed
     default: collecting
+    description: "Current stage in the dataset lifecycle"
 
   created_at:
     type: datetime
     generated: true
+    description: "When this dataset was first created"
 
   last_updated:
     type: datetime
+    description: "When this dataset was last modified"
 
   source_task_ids:
     type: list

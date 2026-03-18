@@ -55,6 +55,7 @@ cloudflare_config:
 
   services:
     type: object
+    description: "Per-service enable/disable toggles"
     fields:
       workers_ai:
         type: boolean
@@ -83,6 +84,7 @@ cloudflare_config:
     fields:
 
       workers_ai:
+        description: "Workers AI free-tier limits (neuron-based billing)"
         neurons_per_day:
           type: integer
           default: 10000
@@ -95,6 +97,7 @@ cloudflare_config:
         # audio_transcription:  ~10 neurons/second
 
       d1:
+        description: "D1 SQL database free-tier limits"
         reads_per_day:
           type: integer
           default: 25000000   # 25M
@@ -106,6 +109,7 @@ cloudflare_config:
           default: 5.0
 
       r2:
+        description: "R2 object storage free-tier limits"
         storage_gb:
           type: float
           default: 10.0
@@ -117,6 +121,7 @@ cloudflare_config:
           default: 10000000    # 10M (GET)
 
       kv:
+        description: "KV store free-tier limits"
         reads_per_day:
           type: integer
           default: 100000      # 100k

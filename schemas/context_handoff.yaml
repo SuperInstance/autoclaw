@@ -105,6 +105,7 @@ context_handoff:
         confidence:
           type: enum
           values: [low, medium, high, very_high]
+          description: "How confident the crew is in this decision"
     description: |
       Key decisions made during this generation, with full rationale.
       This is the crew's reasoning audit trail — the captain can review
@@ -144,6 +145,7 @@ context_handoff:
     fields:
       task_progress:
         type: object
+        description: "Current progress toward task completion"
         fields:
           experiments_completed:
             type: integer
@@ -152,10 +154,11 @@ context_handoff:
           best_result:
             type: object
             nullable: true
+            description: "Best experimental result achieved so far"
             fields:
-              metric_value: {type: float}
-              parameters: {type: object}
-              commit_hash: {type: string}
+              metric_value: {type: float, description: "Best metric value achieved"}
+              parameters: {type: object, description: "Parameter configuration that produced the best result"}
+              commit_hash: {type: string, description: "Git commit hash for the best result"}
           parameter_space_explored:
             type: object
             description: "Which parameter values have been tested"
@@ -169,6 +172,7 @@ context_handoff:
 
       knowledge_state:
         type: object
+        description: "Summary of knowledge created/discovered during this generation"
         fields:
           entries_created_this_generation:
             type: list
@@ -195,6 +199,7 @@ context_handoff:
             priority:
               type: enum
               values: [low, medium, high, critical]
+              description: "How urgently this question should be addressed"
             suggested_action:
               type: string
               example: "Create follow-up study task: DEPTH × LR interaction"
@@ -255,6 +260,7 @@ context_handoff:
   created_at:
     type: datetime
     generated: true
+    description: "When this handoff document was created"
 
   created_by:
     type: string

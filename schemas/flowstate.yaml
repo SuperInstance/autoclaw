@@ -70,6 +70,7 @@ flowstate_session:
       - promoting     # Promoting selected findings to primary graph
       - archived      # All data moved to cold storage
     default: active
+    description: "Current lifecycle stage of this flowstate session"
 
   # --- Sandbox Knowledge ---
   sandbox_knowledge:
@@ -95,6 +96,7 @@ flowstate_session:
                 - rejected    # Decided not to promote
                 - failed_validation  # Tried to promote but failed validation
               default: pending
+              description: "Whether this entry has been reviewed for promotion to primary graph"
 
       total_entries:
         type: integer
@@ -108,6 +110,7 @@ flowstate_session:
   # --- Experiments ---
   experiments:
     type: object
+    description: "Summary of experiments run during this flowstate session"
     fields:
       total_run:
         type: integer
@@ -140,6 +143,7 @@ flowstate_session:
       fields:
         timestamp:
           type: datetime
+          description: "When this log entry was recorded"
         entry_type:
           type: enum
           values:
@@ -193,6 +197,7 @@ flowstate_session:
   started_at:
     type: datetime
     generated: true
+    description: "When this flowstate session began"
 
   ended_at:
     type: datetime
@@ -202,6 +207,7 @@ flowstate_session:
   archived_at:
     type: datetime
     nullable: true
+    description: "When sandbox data was moved to cold storage"
 
   duration_hours:
     type: float
@@ -217,6 +223,7 @@ flowstate_session:
       reviewer:
         type: enum
         values: [captain, crew, both]
+        description: "Who performed the post-flowstate review"
 
       verdict:
         type: enum
@@ -225,6 +232,7 @@ flowstate_session:
           - mixed         # Some useful, some not
           - dead_end      # Nothing worth promoting
           - breakthrough  # Major finding that changes direction
+        description: "Overall assessment of the flowstate session's value"
 
       key_findings:
         type: list
@@ -295,6 +303,7 @@ promotion_candidate:
       - validation_failed   # Validation showed finding is incorrect
       - promoted            # Successfully added to primary knowledge graph
     default: pending_review
+    description: "Current stage in the promotion workflow"
 
   primary_entry_id:
     type: integer
@@ -304,10 +313,12 @@ promotion_candidate:
   created_at:
     type: datetime
     generated: true
+    description: "When this promotion candidate was created"
 
   decided_at:
     type: datetime
     nullable: true
+    description: "When the promotion decision was made"
 
 # ============================================================================
 # FLOWSTATE RULES

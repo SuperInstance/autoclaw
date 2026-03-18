@@ -214,15 +214,19 @@ trigger:
   notification_template:
     type: object
     nullable: true
+    description: "Template for notifications (when action is notify_captain)"
     fields:
       severity:
         type: enum
         values: [info, important, urgent]
         default: info
+        description: "How urgent this notification should be"
       title:
         type: string
+        description: "Notification title template (supports {placeholders})"
       body:
         type: string
+        description: "Notification body template (supports {placeholders})"
 
   # --- Command (for action: run_command) ---
   action_command:
@@ -253,6 +257,7 @@ trigger:
   total_fires:
     type: integer
     default: 0
+    description: "Lifetime fire count for this trigger"
 
 # --- EXAMPLE TRIGGERS ---
 

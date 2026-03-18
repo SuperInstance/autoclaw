@@ -240,18 +240,23 @@ config:
     notify_on_task_complete:
       type: boolean
       default: true
+      description: "Notify captain when a task finishes (success or failure)"
     notify_on_finding:
       type: boolean
       default: true
+      description: "Notify captain when the crew discovers something notable"
     notify_on_milestone:
       type: boolean
       default: true
+      description: "Notify captain on significant achievements (new best metric, etc.)"
     notify_on_alert:
       type: boolean
       default: true  # Can't disable — safety critical
+      description: "Notify captain on resource/safety alerts (always enabled)"
     notify_on_study_insight:
       type: boolean
       default: true
+      description: "Notify captain when self-study produces an interesting result"
 
     # External delivery
     external_channels:
@@ -262,6 +267,7 @@ config:
           type:
             type: enum
             values: [webhook, email, command, file]
+            description: "Delivery channel type"
           min_severity:
             type: enum
             values: [info, important, urgent]

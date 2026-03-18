@@ -47,6 +47,7 @@ agent:
       - error         # Hit unrecoverable error, awaiting restart
       - stopped       # Gracefully stopped
     default: idle
+    description: "Current operational state of this agent"
 
   hardware_profile:
     type: string
@@ -82,6 +83,7 @@ agent:
   # --- Resource limits ---
   resource_limits:
     type: object
+    description: "Resource constraints for this agent instance"
     fields:
       max_threads:
         type: integer
@@ -106,9 +108,11 @@ agent:
   created_at:
     type: datetime
     generated: true
+    description: "When this agent instance was first spawned"
   last_active:
     type: datetime
     nullable: true
+    description: "Timestamp of last message processing activity"
   messages_processed:
     type: integer
     default: 0
@@ -120,6 +124,7 @@ agent:
   current_task:
     type: object
     nullable: true
+    description: "The message this agent is currently working on (null if idle)"
     fields:
       message_id:
         type: integer
@@ -127,9 +132,11 @@ agent:
         type: string
       started_at:
         type: datetime
+        description: "When the agent began processing this message"
       estimated_completion:
         type: datetime
         nullable: true
+        description: "Predicted completion time (if estimable)"
 
 # ============================================================================
 # MESSAGE SCHEMA
@@ -197,18 +204,22 @@ message:
       - failed      # Agent could not complete
       - expired     # TTL passed without processing
     default: pending
+    description: "Current delivery/processing state of this message"
 
   created_at:
     type: datetime
     generated: true
+    description: "When this message was created"
 
   delivered_at:
     type: datetime
     nullable: true
+    description: "When the target agent received this message"
 
   completed_at:
     type: datetime
     nullable: true
+    description: "When the agent finished processing this message"
 
   expires_at:
     type: datetime
@@ -261,6 +272,7 @@ payload_schemas:
       type: enum
       values: [raw, structured, training_data, knowledge_entry]
       default: structured
+      description: "Desired output format for the research results"
     linked_task_id:
       type: integer
       nullable: true
@@ -281,10 +293,12 @@ payload_schemas:
       items:
         type: string
       default: []
+      description: "URLs or references supporting the findings"
     confidence:
       type: enum
       values: [low, medium, high, very_high]
       default: medium
+      description: "How confident the agent is in the result quality"
     quality_score:
       type: float
       nullable: true
@@ -352,6 +366,7 @@ payload_schemas:
     service:
       type: enum
       values: [workers_ai, d1, r2, kv]
+      description: "Which Cloudflare service is triggering the alert"
     daily_pct_used:
       type: float
       description: "0.0-1.0 of daily budget consumed"
@@ -360,6 +375,7 @@ payload_schemas:
     action:
       type: enum
       values: [warn, throttle, pause, end_of_day_burn]
+      description: "Recommended action in response to the credit alert"
     remaining_neurons:
       type: integer
       nullable: true
@@ -400,6 +416,7 @@ agent_pool_config:
 
   scaling:
     type: object
+    description: "Auto-scaling configuration for agent pool"
     fields:
       auto_scale:
         type: boolean
@@ -419,6 +436,7 @@ agent_pool_config:
 
   health:
     type: object
+    description: "Health monitoring configuration for agent instances"
     fields:
       heartbeat_interval_seconds:
         type: integer
@@ -499,11 +517,11 @@ examples:
         - question: "Why does warmup prevent early training instability?"
           answer: "During warmup, the learning rate starts very low (near zero) and increases gradually. This prevents large gradient updates in early training when the model weights are randomly initialized and far from any useful representation. Without warmup, the first few batches can cause large weight updates in random directions, effectively 'poisoning' the model's early trajectory."
           source: "synthesized from 3 arxiv papers"
-          difficulty: medium
+          difficulty: intermediate
         - question: "What is the sqrt(batch_size) warmup rule?"
           answer: "The sqrt(batch_size) warmup rule suggests that optimal warmup steps scale as the square root of the batch size. For batch_size=32, use ~5 warmup steps; for batch_size=512, use ~22 steps. This accounts for the higher gradient variance with smaller batches."
           source: "Smith et al. 2026"
-          difficulty: hard
+          difficulty: advanced
       source_topic: "learning-rate-warmup"
       quality_estimate: 0.85
       language_model: "claude-haiku-4-5-20251001"

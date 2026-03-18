@@ -55,6 +55,7 @@ llm_backend:
   # --- Capabilities ---
   capabilities:
     type: object
+    description: "What this backend can do — context size, function calling, streaming"
     fields:
       context_window_tokens:
         type: integer
@@ -85,6 +86,7 @@ llm_backend:
   # --- Performance Profile ---
   performance:
     type: object
+    description: "Measured performance characteristics for routing decisions"
     fields:
       avg_tokens_per_second:
         type: float
@@ -109,6 +111,7 @@ llm_backend:
   # --- Cost ---
   cost:
     type: object
+    description: "Pricing and budget information for cost-aware routing"
     fields:
       cost_per_1k_input_tokens:
         type: float
@@ -132,6 +135,7 @@ llm_backend:
   # --- Health ---
   health:
     type: object
+    description: "Current health status of this backend"
     fields:
       status:
         type: enum
@@ -141,10 +145,12 @@ llm_backend:
           - unavailable # Not responding
           - disabled    # Manually disabled
         default: healthy
+        description: "Current operational status of this backend"
 
       last_checked:
         type: datetime
         nullable: true
+        description: "When health was last probed"
 
       consecutive_failures:
         type: integer
@@ -290,6 +296,7 @@ routing_request:
 
   prompt:
     type: object
+    description: "The prompt to send to the LLM backend"
     fields:
       system:
         type: string
@@ -299,9 +306,10 @@ routing_request:
         type: list
         items:
           type: object
+          description: "A single message in the conversation"
           fields:
-            role: {type: enum, values: [user, assistant]}
-            content: {type: string}
+            role: {type: enum, values: [user, assistant], description: "Who sent this message"}
+            content: {type: string, description: "Message text"}
       max_tokens:
         type: integer
         default: 1024
@@ -310,6 +318,7 @@ routing_request:
     type: enum
     values: [critical, high, normal, low, background]
     default: normal
+    description: "Request urgency — affects which backends are eligible"
 
   requires_function_calling:
     type: boolean
@@ -353,12 +362,14 @@ routing_response:
         outcome:
           type: enum
           values: [success, error, timeout, low_confidence, skipped]
+          description: "What happened when this backend was tried"
         latency_ms: {type: float, nullable: true}
         error_message: {type: string, nullable: true}
     description: "All backends tried, in order"
 
   response:
     type: object
+    description: "The final LLM response returned to the requesting agent"
     fields:
       content:
         type: string
@@ -369,9 +380,10 @@ routing_response:
         description: "Self-reported confidence (0.0-1.0), if available"
       tokens_used:
         type: object
+        description: "Token consumption for cost tracking"
         fields:
-          input: {type: integer}
-          output: {type: integer}
+          input: {type: integer, description: "Input/prompt tokens consumed"}
+          output: {type: integer, description: "Output/completion tokens generated"}
 
   cost_usd:
     type: float
@@ -389,6 +401,7 @@ routing_response:
   created_at:
     type: datetime
     generated: true
+    description: "When the routing response was recorded"
 
 # ============================================================================
 # DEFAULT ROUTING RULES
