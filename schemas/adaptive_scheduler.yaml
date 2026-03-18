@@ -1,0 +1,417 @@
+# ============================================================================
+# ADAPTIVE SCHEDULER SCHEMA (Bayesian Adaptive Selection)
+# ============================================================================
+# Intelligent, learning-based task and agent scheduling.
+#
+# PROBLEM: The current scheduler uses a simple priority queue — highest
+# priority task runs first. This is correct but leaves value on the table:
+#   - It doesn't learn which agent configurations produce the best results
+#   - It doesn't adapt to changing conditions (GPU load, CF budget, time of day)
+#   - It doesn't optimize for the captain's implicit preferences over time
+#
+# SOLUTION: Bayesian Adaptive Scheduler. Uses Thompson Sampling (a Bayesian
+# bandit algorithm) to:
+#   1. Track which agent configurations produce the best outcomes
+#   2. Balance exploration (try new configs) vs exploitation (use known-good)
+#   3. Adapt routing based on real-time resource availability
+#   4. Detect when a configuration has converged (stop exploring it)
+#
+# INSPIRED BY: SuperInstance/Bayesian-Multi-Armed-Bandits patterns
+# (Thompson Sampling, Convergence Detection, Instructional Delta Tracking)
+#
+# IMPLEMENTATION NOTES:
+# - Scheduler lives in crew/scheduler.py (extends existing)
+# - Bandit state stored in data/crew/bandit_state.yaml
+# - Updated after every task completion
+# - Convergence detection runs daily during maintenance
+# ============================================================================
+
+bandit_arm:
+  # ============================================================================
+  # A "bandit arm" represents one configuration option the scheduler can choose.
+  # The scheduler learns which arms produce the best outcomes over time.
+  # ============================================================================
+
+  id:
+    type: string
+    description: "Unique arm identifier"
+    example: "researcher_1_mistral7b_web_search"
+
+  arm_type:
+    type: enum
+    values:
+      - agent_config      # A specific agent + model + capability combination
+      - task_ordering     # A strategy for ordering tasks of equal priority
+      - cf_timing         # When to use Cloudflare credits (morning vs evening)
+      - study_topic       # Which study topic to pursue when idle
+    description: "What this arm represents"
+
+  # --- Configuration ---
+  config:
+    type: object
+    description: "The specific configuration this arm represents"
+    example:
+      agent_role: researcher
+      model_backend: local_mistral_7b
+      primary_capability: web_search
+      max_depth: 2
+
+  # --- Thompson Sampling State ---
+  # Thompson Sampling maintains a Beta distribution for each arm.
+  # Beta(alpha, beta) where:
+  #   alpha = successes + 1 (prior)
+  #   beta  = failures + 1  (prior)
+  # To sample: draw from Beta(alpha, beta), pick arm with highest sample.
+  thompson_sampling:
+    type: object
+    description: "Beta distribution parameters for Thompson Sampling on this arm"
+    fields:
+      alpha:
+        type: float
+        default: 1.0
+        description: "Beta distribution alpha parameter (successes + prior)"
+      beta:
+        type: float
+        default: 1.0
+        description: "Beta distribution beta parameter (failures + prior)"
+      mean:
+        type: float
+        description: "Current mean estimate: alpha / (alpha + beta)"
+      variance:
+        type: float
+        description: "Current variance: measure of uncertainty"
+      total_pulls:
+        type: integer
+        default: 0
+        description: "Total times this arm has been selected"
+
+  # --- Outcome Tracking ---
+  outcomes:
+    type: object
+    description: "Tracked outcomes for this arm including success/failure counts and reward history"
+    fields:
+      successes:
+        type: integer
+        default: 0
+        description: |
+          Count of successful outcomes. Success is defined per arm_type:
+            agent_config: task completed with quality_score >= 0.7
+            task_ordering: captain rated the session positively
+            cf_timing: credits used efficiently (< 5% wasted)
+            study_topic: produced >= 1 high-confidence knowledge entry
+
+      failures:
+        type: integer
+        default: 0
+        description: "Count of failed or low-quality outcomes"
+
+      last_outcome:
+        type: enum
+        values: [success, failure, neutral]
+        nullable: true
+        description: "Result of the most recent pull of this arm"
+
+      last_outcome_at:
+        type: datetime
+        nullable: true
+        description: "Timestamp of the most recent outcome"
+
+      reward_history:
+        type: list
+        items:
+          type: object
+          fields:
+            timestamp: {type: datetime, description: "When this reward was recorded"}
+            reward: {type: float, description: "0.0-1.0 normalized reward"}
+            context: {type: object, description: "Conditions when this outcome occurred"}
+        description: |
+          Recent reward history (last 50 outcomes).
+          Used for trend detection and convergence analysis.
+        max_length: 50
+
+  # --- Convergence Detection ---
+  convergence:
+    type: object
+    description: |
+      Tracks whether this arm has converged — i.e., we have enough data
+      to be confident about its performance. Converged arms are exploited
+      more heavily; unconverged arms get more exploration.
+    fields:
+      is_converged:
+        type: boolean
+        default: false
+        description: "True when variance < convergence_threshold for N consecutive pulls"
+
+      convergence_threshold:
+        type: float
+        default: 0.05
+        description: "Variance below which arm is considered converged"
+
+      converged_at:
+        type: datetime
+        nullable: true
+        description: "Timestamp when convergence was first detected"
+
+      estimated_true_mean:
+        type: float
+        nullable: true
+        description: "Best estimate of true success rate (when converged)"
+
+  enabled:
+    type: boolean
+    default: true
+    description: "Disabled arms are never selected"
+
+  created_at:
+    type: datetime
+    generated: true
+    description: "When this arm was first registered"
+
+  last_updated:
+    type: datetime
+    description: "When this arm's state was last modified"
+
+# ============================================================================
+# BANDIT STATE SCHEMA
+# ============================================================================
+# The full state of the Bayesian scheduler.
+
+bandit_state:
+  version:
+    type: integer
+    default: 1
+    description: "Schema version for migration"
+
+  arms:
+    type: list
+    items:
+      type: object
+      description: "bandit_arm instances"
+    description: "All registered arms"
+
+  # --- Global Statistics ---
+  global_stats:
+    type: object
+    description: "Aggregate statistics across all arms"
+    fields:
+      total_decisions:
+        type: integer
+        default: 0
+        description: "Total scheduling decisions made"
+
+      exploration_rate:
+        type: float
+        description: |
+          Current fraction of decisions that were exploratory
+          (chose a non-greedy arm). Target: 10-20%.
+
+      best_arm_id:
+        type: string
+        nullable: true
+        description: "Current best-performing arm (highest mean)"
+
+      last_updated:
+        type: datetime
+        description: "When global stats were last recalculated"
+
+  # --- Instructional Delta Tracking ---
+  # Tracks how much the crew's performance has improved over time.
+  # "Delta" = change in outcome quality between time periods.
+  instructional_delta:
+    type: object
+    description: |
+      Measures learning velocity — how fast the crew is improving.
+      High delta = crew is learning quickly (good).
+      Low delta = crew has plateaued (may need new study topics or tasks).
+    fields:
+      weekly_deltas:
+        type: list
+        items:
+          type: object
+          fields:
+            week_start: {type: datetime, description: "Start date of this weekly period"}
+            avg_reward_this_week: {type: float}
+            avg_reward_last_week: {type: float}
+            delta: {type: float, description: "Positive = improving"}
+            dominant_arm: {type: string, description: "Most-used arm this week"}
+        description: "Weekly performance delta history (last 12 weeks)"
+        max_length: 12
+
+      current_plateau_weeks:
+        type: integer
+        default: 0
+        description: |
+          Consecutive weeks with delta < 0.02 (near-zero improvement).
+          If > 3, trigger study mode to find new approaches.
+
+      plateau_action_taken:
+        type: boolean
+        default: false
+        description: "True if plateau response has been triggered this cycle"
+
+  last_gc_at:
+    type: datetime
+    nullable: true
+    description: "Last time old/disabled arms were pruned"
+
+# ============================================================================
+# SCHEDULING DECISION SCHEMA
+# ============================================================================
+# Logged for every scheduling decision (for analysis and debugging).
+
+scheduling_decision:
+  decision_id:
+    type: string
+    generated: true
+
+  decision_type:
+    type: enum
+    values:
+      - agent_assignment    # Which agent handles a task
+      - task_ordering       # Which task to work on next
+      - cf_timing           # When to use CF credits
+      - study_selection     # Which study topic to pursue
+    description: "Category of scheduling decision being made"
+
+  # --- Thompson Sampling Draw ---
+  arms_sampled:
+    type: list
+    items:
+      type: object
+      fields:
+        arm_id: {type: string}
+        sampled_value: {type: float, description: "Value drawn from Beta distribution"}
+        was_selected: {type: boolean}
+    description: "All arms considered and their sampled values"
+
+  selected_arm_id:
+    type: string
+    description: "The arm that was selected"
+
+  was_exploratory:
+    type: boolean
+    description: "True if a non-greedy arm was selected (exploration)"
+
+  context:
+    type: object
+    description: "Conditions at decision time (for contextual analysis)"
+    fields:
+      time_of_day_utc: {type: integer, description: "Hour 0-23"}
+      cf_budget_remaining_pct: {type: float}
+      task_queue_depth: {type: integer}
+      gpu_utilization_pct: {type: float, nullable: true}
+      active_agent_count: {type: integer}
+
+  outcome:
+    type: object
+    nullable: true
+    description: "Populated after the decision's outcome is known"
+    fields:
+      reward: {type: float, description: "0.0-1.0 normalized reward"}
+      outcome_type: {type: enum, values: [success, failure, neutral], description: "Categorical result of the decision"}
+      outcome_at: {type: datetime, description: "When the outcome was observed"}
+      notes: {type: string, nullable: true}
+
+  created_at:
+    type: datetime
+    generated: true
+    description: "When this scheduling decision was recorded"
+
+# ============================================================================
+# SCHEDULING RULES
+# ============================================================================
+#
+# The adaptive scheduler works alongside (not replacing) the priority queue:
+#
+# 1. TASK SELECTION:
+#    - Priority queue determines which tasks are eligible (priority 1-3 first)
+#    - Among equal-priority tasks, Thompson Sampling selects the ordering
+#    - Over time, the scheduler learns which task types produce the best outcomes
+#
+# 2. AGENT ASSIGNMENT:
+#    - When a task arrives, Thompson Sampling selects the agent configuration
+#    - Configurations include: which model backend, which capabilities to use
+#    - Learns which configurations work best for which task types
+#
+# 3. CLOUDFLARE TIMING:
+#    - Learns the best times of day to use CF credits
+#    - Balances: fresh credits (midnight) vs end-of-day burn strategy
+#
+# 4. STUDY TOPIC SELECTION:
+#    - When crew enters study mode, Thompson Sampling selects the topic
+#    - Learns which study topics produce the most valuable knowledge entries
+#
+# CONVERGENCE BEHAVIOR:
+#    - New arms start with high uncertainty (explore frequently)
+#    - As outcomes accumulate, variance decreases (exploit more)
+#    - Converged arms are selected ~80% of the time; 20% reserved for exploration
+#    - If all arms converge and performance plateaus, trigger new arm generation
+
+# ============================================================================
+# EXAMPLES
+# ============================================================================
+
+examples:
+  agent_config_arm:
+    id: "researcher_mistral7b_web_search"
+    arm_type: agent_config
+    config:
+      agent_role: researcher
+      model_backend: local_mistral_7b
+      primary_capability: web_search
+      max_search_depth: 2
+      max_sources: 5
+    thompson_sampling:
+      alpha: 18.0
+      beta: 4.0
+      mean: 0.818
+      variance: 0.033
+      total_pulls: 21
+    outcomes:
+      successes: 17
+      failures: 4
+      last_outcome: success
+      last_outcome_at: "2026-03-18T13:45:00Z"
+      reward_history:
+        - timestamp: "2026-03-18T13:45:00Z"
+          reward: 0.85
+          context: {task_type: research, topic_complexity: medium}
+        - timestamp: "2026-03-18T11:20:00Z"
+          reward: 0.72
+          context: {task_type: research, topic_complexity: high}
+    convergence:
+      is_converged: false
+      convergence_threshold: 0.05
+      converged_at: null
+      estimated_true_mean: null
+    enabled: true
+    created_at: "2026-03-10T08:00:00Z"
+    last_updated: "2026-03-18T13:45:00Z"
+
+  bandit_state_example:
+    version: 1
+    arms:
+      - id: "researcher_mistral7b_web_search"
+        # ... (see arm example above)
+      - id: "teacher_cloudflare_qa_gen"
+        # ...
+    global_stats:
+      total_decisions: 312
+      exploration_rate: 0.18
+      best_arm_id: "researcher_mistral7b_web_search"
+      last_updated: "2026-03-18T14:00:00Z"
+    instructional_delta:
+      weekly_deltas:
+        - week_start: "2026-03-11T00:00:00Z"
+          avg_reward_this_week: 0.74
+          avg_reward_last_week: 0.68
+          delta: 0.06
+          dominant_arm: "researcher_mistral7b_web_search"
+        - week_start: "2026-03-18T00:00:00Z"
+          avg_reward_this_week: 0.81
+          avg_reward_last_week: 0.74
+          delta: 0.07
+          dominant_arm: "researcher_mistral7b_web_search"
+      current_plateau_weeks: 0
+      plateau_action_taken: false
+    last_gc_at: "2026-03-18T02:00:00Z"

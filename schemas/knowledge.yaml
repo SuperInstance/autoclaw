@@ -98,12 +98,16 @@ knowledge_entry:
           metric:
             type: string
             example: "val_bpb"
+            description: "Name of the metric being tracked"
           best:
             type: float
+            description: "Best (lowest for val_bpb) metric value observed"
           worst:
             type: float
+            description: "Worst metric value observed"
           baseline:
             type: float
+            description: "Baseline metric value before this insight's experiments"
 
   # --- Confidence ---
   confidence:
@@ -148,6 +152,7 @@ knowledge_entry:
   created_at:
     type: datetime
     generated: true
+    description: "When this knowledge entry was first created"
 
   last_validated:
     type: datetime

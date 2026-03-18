@@ -72,14 +72,18 @@ crew:
         type: datetime
       progress:
         type: object
+        description: "How far along the current task is"
         fields:
           experiments_done:
             type: integer
+            description: "Experiments completed so far"
           experiments_total:
             type: integer
+            description: "Total experiments planned for this task"
           current_experiment:
             type: object
             nullable: true
+            description: "The experiment currently running (null between experiments)"
             fields:
               started_at:
                 type: datetime
@@ -89,17 +93,22 @@ crew:
           best_so_far:
             type: object
             nullable: true
+            description: "Best experiment result found so far in this task"
             fields:
               metric_value:
                 type: float
+                description: "Best metric value achieved"
               parameters:
                 type: object
+                description: "Parameter values that produced the best result"
               commit_hash:
                 type: string
+                description: "Git commit hash of the best experiment"
 
   # --- Uptime & Metrics ---
   uptime:
     type: object
+    description: "Daemon uptime and restart tracking"
     fields:
       started_at:
         type: datetime
@@ -114,6 +123,7 @@ crew:
 
   metrics:
     type: object
+    description: "Cumulative performance counters for crew activity"
     fields:
       tasks_completed:
         type: integer

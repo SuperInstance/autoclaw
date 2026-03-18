@@ -1,0 +1,386 @@
+# ============================================================================
+# CONTEXT HANDOFF SCHEMA (Baton Pattern)
+# ============================================================================
+# Enables infinite-context operation for long-running autonomous tasks.
+#
+# PROBLEM: LLMs have finite context windows. A crew running 24/7 on a complex
+# research task will eventually exceed the context limit of any single model
+# call. Without a handoff mechanism, the crew loses its reasoning thread and
+# must start over — wasting work and breaking continuity.
+#
+# SOLUTION: The Baton pattern. Before a context window fills, the crew
+# "passes the baton" — creating a structured handoff document that captures:
+#   - What was accomplished
+#   - What was decided and why
+#   - What comes next
+#   - What skills/knowledge were extracted
+#   - Open questions and concerns
+#
+# The next crew invocation picks up the baton and continues seamlessly.
+# This enables tasks that run for hours, days, or weeks without losing thread.
+#
+# INSPIRED BY: SuperInstance/Baton repo patterns (Generational Context Handoff,
+# Decision Rationale Tree, Skills Extraction)
+#
+# IMPLEMENTATION NOTES:
+# - Handoffs stored at data/handoffs/{task_id}/{generation}.yaml
+# - Current baton symlinked at data/handoffs/{task_id}/CURRENT -> {gen}.yaml
+# - Triggered automatically when context_tokens > 0.75 × context_limit
+# - Also triggered on: task pause, daemon shutdown, crew restart
+# - Baton is read at task resume before any new work begins
+# ============================================================================
+
+context_handoff:
+  # --- Identity ---
+  id:
+    type: string
+    pattern: "{task_id}_gen{generation_number}"
+    example: "task42_gen003"
+    description: "Unique handoff identifier"
+
+  task_id:
+    type: integer
+    description: "The task this handoff belongs to"
+
+  generation:
+    type: integer
+    description: |
+      Which generation this is. Generation 1 = first handoff for this task.
+      Each subsequent handoff increments this. Enables full lineage tracing.
+    example: 3
+
+  parent_handoff_id:
+    type: string
+    nullable: true
+    description: "Previous generation's handoff ID (null for generation 1)"
+    example: "task42_gen002"
+
+  # --- What Was Accomplished ---
+  accomplishments:
+    type: list
+    items:
+      type: object
+      fields:
+        description:
+          type: string
+          description: "What was done"
+          example: "Ran 8 experiments varying LR from 0.001 to 0.008"
+        outcome:
+          type: string
+          description: "What resulted"
+          example: "LR=0.005 produced best val_bpb of 1.006"
+        evidence:
+          type: list
+          items:
+            type: string
+          description: "Commit hashes, knowledge entry IDs, or URLs supporting this"
+          example: ["a3f2c1d", "e7b3a01"]
+    description: "Concrete things completed in this generation"
+
+  # --- Decision Rationale Tree ---
+  decisions:
+    type: list
+    items:
+      type: object
+      fields:
+        decision:
+          type: string
+          description: "What was decided"
+          example: "Skip LR values above 0.008 — diminishing returns confirmed"
+        rationale:
+          type: string
+          description: "Why this decision was made"
+          example: |
+            Experiments 6-8 showed val_bpb degrading monotonically above LR=0.006.
+            The trend is clear enough that testing 0.009 and 0.01 would waste 2
+            experiment slots with near-certain negative results.
+        alternatives_considered:
+          type: list
+          items:
+            type: string
+          description: "Other options that were considered but rejected"
+          example:
+            - "Continue sweep to LR=0.01 (rejected: clear diminishing returns)"
+            - "Switch to cyclic LR (rejected: outside task scope)"
+        confidence:
+          type: enum
+          values: [low, medium, high, very_high]
+          description: "How confident the crew is in this decision"
+    description: |
+      Key decisions made during this generation, with full rationale.
+      This is the crew's reasoning audit trail — the captain can review
+      why the crew made each choice.
+
+  # --- Extracted Skills ---
+  skills_extracted:
+    type: list
+    items:
+      type: object
+      fields:
+        skill_name:
+          type: string
+          description: "Short name for this skill"
+          example: "lr_sweep_early_stopping"
+        description:
+          type: string
+          description: "What this skill is and when to apply it"
+          example: |
+            When running LR sweeps, monitor val_bpb trend after each experiment.
+            If 3 consecutive experiments show degrading performance, stop the sweep
+            early and refine around the best value found so far.
+        applicable_when:
+          type: string
+          description: "Conditions under which this skill applies"
+          example: "Any parameter sweep with monotonic metric response"
+    description: |
+      Generalizable skills extracted from this generation's work.
+      Skills are stored in the knowledge base and reused in future tasks.
+      This is how the crew gets smarter over time — not just accumulating
+      facts, but learning HOW to work more effectively.
+
+  # --- State Snapshot ---
+  state_snapshot:
+    type: object
+    description: "Complete state needed for the next generation to continue"
+    fields:
+      task_progress:
+        type: object
+        description: "Current progress toward task completion"
+        fields:
+          experiments_completed:
+            type: integer
+          experiments_remaining:
+            type: integer
+          best_result:
+            type: object
+            nullable: true
+            description: "Best experimental result achieved so far"
+            fields:
+              metric_value: {type: float, description: "Best metric value achieved"}
+              parameters: {type: object, description: "Parameter configuration that produced the best result"}
+              commit_hash: {type: string, description: "Git commit hash for the best result"}
+          parameter_space_explored:
+            type: object
+            description: "Which parameter values have been tested"
+            example:
+              learning_rate: [0.001, 0.002, 0.003, 0.005, 0.006, 0.008]
+          parameter_space_remaining:
+            type: object
+            description: "Which parameter values still need testing"
+            example:
+              learning_rate: []  # Empty = sweep complete
+
+      knowledge_state:
+        type: object
+        description: "Summary of knowledge created/discovered during this generation"
+        fields:
+          entries_created_this_generation:
+            type: list
+            items:
+              type: integer
+            description: "Knowledge entry IDs created during this generation"
+          key_insights:
+            type: list
+            items:
+              type: string
+            description: "Most important insights from this generation (for quick context)"
+            example:
+              - "LR=0.005 is optimal for DEPTH=8 (24 experiments, very_high confidence)"
+              - "Cosine annealing adds 1.2% improvement over fixed LR at same base rate"
+
+      open_questions:
+        type: list
+        items:
+          type: object
+          fields:
+            question:
+              type: string
+              example: "Does optimal LR change with model depth?"
+            priority:
+              type: enum
+              values: [low, medium, high, critical]
+              description: "How urgently this question should be addressed"
+            suggested_action:
+              type: string
+              example: "Create follow-up study task: DEPTH × LR interaction"
+        description: "Unresolved questions that the next generation should address"
+
+      concerns:
+        type: list
+        items:
+          type: string
+        description: "Things the crew is worried about going into the next generation"
+        example:
+          - "GPU temperature trending up — monitor closely"
+          - "Disk at 78% — may need maintenance before next task"
+
+  # --- Next Generation Instructions ---
+  next_generation_plan:
+    type: object
+    description: "What the next generation should do when it picks up this baton"
+    fields:
+      immediate_next_action:
+        type: string
+        description: "The very first thing to do after reading this handoff"
+        example: "Review results of experiments 1-8, then run refinement sweep around LR=0.005"
+
+      planned_steps:
+        type: list
+        items:
+          type: string
+        description: "Ordered list of planned steps for the next generation"
+        example:
+          - "Run 4 refinement experiments: LR=[0.004, 0.0045, 0.005, 0.0055]"
+          - "Compare with cosine vs fixed schedule at best LR"
+          - "Write task results summary"
+          - "Create follow-up task for DEPTH interaction study"
+
+      context_to_load:
+        type: list
+        items:
+          type: integer
+        description: "Knowledge entry IDs to load into context at start of next generation"
+
+  # --- Metadata ---
+  trigger:
+    type: enum
+    values:
+      - context_limit   # Context window approaching limit
+      - task_pause      # Captain paused the task
+      - daemon_shutdown # Daemon is shutting down
+      - task_complete   # Task finished (final handoff)
+      - error_recovery  # Recovering from an error
+    description: "What triggered this handoff"
+
+  context_tokens_at_handoff:
+    type: integer
+    nullable: true
+    description: "Approximate token count when handoff was triggered"
+
+  created_at:
+    type: datetime
+    generated: true
+    description: "When this handoff document was created"
+
+  created_by:
+    type: string
+    description: "Agent ID that created this handoff"
+    example: "distiller_1"
+
+# ============================================================================
+# HANDOFF PROTOCOL
+# ============================================================================
+#
+# WHEN TO CREATE A HANDOFF:
+#   1. Context tokens > 75% of model's context limit
+#   2. Task is paused by captain
+#   3. Daemon is shutting down (graceful)
+#   4. Task completes (final handoff for audit trail)
+#   5. Error recovery (preserve state before retry)
+#
+# HOW TO CREATE A HANDOFF:
+#   1. Distiller agent reviews current generation's work
+#   2. Extracts accomplishments, decisions, skills
+#   3. Snapshots current state (progress, knowledge, open questions)
+#   4. Writes next_generation_plan
+#   5. Saves handoff to data/handoffs/{task_id}/{generation}.yaml
+#   6. Updates CURRENT symlink
+#   7. Logs handoff creation to crew.log
+#
+# HOW TO RESUME FROM A HANDOFF:
+#   1. Load CURRENT handoff for the task
+#   2. Read state_snapshot to understand where we are
+#   3. Load context_to_load knowledge entries
+#   4. Follow next_generation_plan.immediate_next_action
+#   5. Continue with planned_steps
+#   6. Create new handoff when context fills again
+#
+# LINEAGE TRACING:
+#   - Each handoff links to parent via parent_handoff_id
+#   - Full chain: gen001 → gen002 → gen003 → ... → final
+#   - Captain can review the full decision history for any task
+#   - Useful for: understanding why the crew made choices, debugging,
+#     and learning from the crew's reasoning patterns
+
+# ============================================================================
+# EXAMPLES
+# ============================================================================
+
+examples:
+  mid_task_handoff:
+    id: "task42_gen002"
+    task_id: 42
+    generation: 2
+    parent_handoff_id: "task42_gen001"
+    accomplishments:
+      - description: "Ran 8 LR sweep experiments (LR=0.001 to 0.008)"
+        outcome: "LR=0.005 produced best val_bpb of 1.006 (baseline was 1.018)"
+        evidence: ["a3f2c1d", "e7b3a01", "f1d2e3a"]
+      - description: "Created 3 knowledge entries from sweep results"
+        outcome: "Entries #1, #15, #16 added to knowledge base"
+        evidence: [1, 15, 16]
+    decisions:
+      - decision: "Skip LR values above 0.008"
+        rationale: |
+          Experiments 6-8 showed monotonically degrading val_bpb above LR=0.006.
+          Trend is clear. Testing 0.009-0.01 would waste 2 experiment slots.
+        alternatives_considered:
+          - "Continue to LR=0.01 (rejected: clear diminishing returns)"
+        confidence: high
+      - decision: "Add cosine annealing comparison to task scope"
+        rationale: |
+          Captain's original task was LR sweep only. But experiment 5 showed
+          unusually good convergence behavior suggesting schedule matters.
+          Adding 2 schedule comparison experiments is within spirit of task.
+        alternatives_considered:
+          - "Create separate follow-up task (rejected: small scope, do it now)"
+        confidence: medium
+    skills_extracted:
+      - skill_name: "lr_sweep_early_stopping"
+        description: |
+          When 3 consecutive LR sweep experiments show degrading performance,
+          stop the sweep and refine around the best value found.
+        applicable_when: "Any monotonic parameter sweep"
+    state_snapshot:
+      task_progress:
+        experiments_completed: 8
+        experiments_remaining: 4
+        best_result:
+          metric_value: 1.006
+          parameters:
+            learning_rate: 0.005
+            lr_schedule: fixed
+            warmup_steps: 100
+          commit_hash: "a3f2c1d"
+        parameter_space_explored:
+          learning_rate: [0.001, 0.002, 0.003, 0.005, 0.006, 0.008]
+        parameter_space_remaining:
+          learning_rate: []
+          lr_schedule: [cosine]  # Still need to test cosine at LR=0.005
+      knowledge_state:
+        entries_created_this_generation: [1, 15, 16]
+        key_insights:
+          - "LR=0.005 optimal for DEPTH=8 (8 experiments, high confidence)"
+          - "LR > 0.006 causes degradation — avoid"
+      open_questions:
+        - question: "Does cosine annealing improve on fixed LR at LR=0.005?"
+          priority: high
+          suggested_action: "Run 2 comparison experiments (already planned)"
+        - question: "Does optimal LR change with model depth?"
+          priority: medium
+          suggested_action: "Create follow-up study task after this task completes"
+      concerns:
+        - "GPU temperature at 71°C — monitor, throttle if > 80°C"
+    next_generation_plan:
+      immediate_next_action: "Run cosine annealing comparison at LR=0.005"
+      planned_steps:
+        - "Run experiment: LR=0.005, schedule=cosine, warmup=100"
+        - "Run experiment: LR=0.005, schedule=cosine, warmup=200"
+        - "Compare cosine vs fixed at LR=0.005"
+        - "Write task results summary"
+        - "Create follow-up task: DEPTH × LR interaction study"
+      context_to_load: [1, 15, 16]
+    trigger: context_limit
+    context_tokens_at_handoff: 76543
+    created_at: "2026-03-18T12:30:00Z"
+    created_by: "distiller_1"

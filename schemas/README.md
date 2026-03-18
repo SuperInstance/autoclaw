@@ -5,14 +5,30 @@ of truth** for what data looks like. Implementation code must match these schema
 
 ## Files
 
+### Core Schemas (Phase 1–4, implemented)
+
 | Schema | What it defines | Key types |
 |--------|----------------|-----------|
 | [task.yaml](task.yaml) | Work items on the task board | Task, ExperimentSpec, TaskResults |
 | [crew.yaml](crew.yaml) | Crew member state and lifecycle | CrewState, StudyState, GPU stats |
+| [agent.yaml](agent.yaml) | Multi-agent pool, roles, messages | Agent, Message, AgentPool, PayloadSchemas |
 | [trigger.yaml](trigger.yaml) | External event watchers | Trigger, TriggerSource, TriggerFilter |
 | [notification.yaml](notification.yaml) | Crew → captain messages | Notification types and severity |
 | [knowledge.yaml](knowledge.yaml) | Crew's accumulated learning | KnowledgeEntry, evidence, confidence |
+| [knowledge_lifecycle.yaml](knowledge_lifecycle.yaml) | Storage tiers, GC, scoring | StorageTier, GCRules, LifecycleScore |
+| [hardware_profile.yaml](hardware_profile.yaml) | Device profiles, inference backends | HardwareProfile, InferenceBackend, Scaler |
+| [cloudflare.yaml](cloudflare.yaml) | CF services, budgets, credit gaming | CFService, CreditBudget, BurnStrategy |
 | [config.yaml](config.yaml) | System configuration | LLM, GPU, experiments, tasks, triggers, storage |
+
+### Extended Schemas (Phase 5+, design complete)
+
+| Schema | What it defines | Key types | Why it matters |
+|--------|----------------|-----------|----------------|
+| [training_data.yaml](training_data.yaml) | LoRA training data generation & curation | TrainingExample, Dataset, QualityControl | Crew's primary output for fine-tuning specialist models |
+| [context_handoff.yaml](context_handoff.yaml) | Infinite-context operation via Baton pattern | ContextHandoff, DecisionRationale, SkillExtraction | Enables tasks that run hours/days without losing thread |
+| [llm_router.yaml](llm_router.yaml) | Intelligent LLM routing across backends | LLMBackend, RoutingRule, CascadeRouter | Cost optimization + fallback resilience |
+| [adaptive_scheduler.yaml](adaptive_scheduler.yaml) | Bayesian adaptive task & agent scheduling | BanditArm, ThompsonSampling, InstructionalDelta | Crew learns which configurations produce best outcomes |
+| [flowstate.yaml](flowstate.yaml) | Exploratory sandbox mode | FlowstateSession, PromotionCandidate, ExplorationLog | Radical exploration without contaminating primary knowledge |
 
 ## How to Read These
 
@@ -41,6 +57,7 @@ data/
 │   ├── state.yaml           # Crew state (crew.yaml schema)
 │   ├── knowledge.yaml       # Knowledge base (knowledge.yaml schema)
 │   ├── study_queue.yaml     # Study topics
+│   ├── bandit_state.yaml    # Adaptive scheduler state (adaptive_scheduler.yaml)
 │   └── heartbeat            # Last heartbeat (plain text timestamp)
 ├── tasks/
 │   ├── ACTIVE -> 42.yaml    # Symlink to active task
@@ -56,6 +73,24 @@ data/
 │   ├── results.tsv          # All experiment results
 │   ├── exp_0001/            # Per-experiment data
 │   └── .counter             # Next experiment number
+├── training/
+│   └── {dataset_tag}/       # Training datasets (training_data.yaml schema)
+│       ├── meta.yaml        # Dataset metadata
+│       ├── raw/             # All generated examples
+│       ├── curated/         # Quality-filtered examples
+│       └── lora.jsonl       # LoRA-ready export
+├── handoffs/
+│   └── {task_id}/           # Context handoffs (context_handoff.yaml schema)
+│       ├── CURRENT -> gen003.yaml
+│       ├── gen001.yaml
+│       └── gen003.yaml
+├── flowstate/
+│   ├── {session_id}/        # Active flowstate sessions (flowstate.yaml schema)
+│   │   ├── session.yaml     # Session metadata
+│   │   ├── knowledge.yaml   # Sandbox knowledge entries
+│   │   └── experiments/     # Flowstate experiments
+│   └── archive/             # Completed sessions (compressed)
+├── llm_routing.log          # LLM routing decisions log
 ├── crew.pid                 # Daemon PID
 ├── crew.sock                # Unix socket for CLI
 └── crew.log                 # Daemon log

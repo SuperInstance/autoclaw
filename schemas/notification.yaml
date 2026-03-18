@@ -112,6 +112,7 @@ notification:
   read_at:
     type: datetime
     nullable: true
+    description: "When the captain marked this notification as read"
 
 # --- NOTIFICATION RULES ---
 # The crew creates notifications at these events:

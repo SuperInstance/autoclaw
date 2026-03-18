@@ -286,14 +286,17 @@ task:
   started_at:
     type: datetime
     nullable: true
+    description: "When the crew began working on this task"
 
   paused_at:
     type: datetime
     nullable: true
+    description: "When the captain paused this task (null if never paused)"
 
   completed_at:
     type: datetime
     nullable: true
+    description: "When the task reached a terminal state (completed/failed/cancelled)"
 
   # --- Resource tracking ---
   gpu_seconds_used:

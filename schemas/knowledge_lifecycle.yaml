@@ -288,7 +288,7 @@ knowledge_lifecycle:
           question: string
           answer: string
           source: string
-          difficulty: [easy, medium, hard, expert]
+          difficulty: [beginner, intermediate, advanced, expert]
 
       instruction_response:
         description: "Instruction-following format (Alpaca-style)"
