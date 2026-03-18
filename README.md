@@ -1,408 +1,379 @@
-# AutoCrew: Autonomous Multi-Agent Knowledge System
+# AutoCrew
 
-**A 24/7 crew of AI agents that collaborates to build, refine, and serve your knowledge base.**
-
-## What Is AutoCrew?
-
-AutoCrew is an autonomous system of specialized agents working together to research, teach, critique, and synthesize knowledge. Think of it as a team of researchers, educators, and synthesizers that never sleeps—continuously exploring topics, generating training data, challenging assumptions, and distilling insights into actionable knowledge.
-
-Unlike traditional LLM applications, AutoCrew agents:
-- **Work independently** yet collaborate through an async message bus
-- **Learn from each other** through a shared knowledge base with lifecycle management
-- **Think critically** with built-in fact-checking and quality scoring
-- **Scale intelligently** from a Jetson Nano to multi-GPU workstations to cloud APIs
-- **Respect your data** with local-first design, graceful fallbacks, and credit-aware API usage
-
-The system maintains two parallel knowledge representations:
-1. **Human-readable wiki** (source of truth—markdown, traceable sources)
-2. **Vector embeddings** (fast inference, semantic search, but always linked back to sources)
-
-This dual system means you get speed without sacrificing interpretability.
+**Autonomous multi-agent knowledge system. 24/7 crew of researchers, teachers, critics, and synthesizers building your knowledge base.**
 
 ---
 
-## How It Works
-
-### The Agent Crew
+## The Concept
 
 ```mermaid
 graph LR
-    A[Researcher Agent] -->|findings| B[Message Bus]
-    B --> C[Teacher Agent]
-    B --> D[Critic Agent]
-    B --> E[Distiller Agent]
-    C -->|training data| F[Knowledge Store]
-    D -->|challenges| F
-    E -->|synthesis| F
-    A -->|research results| F
-    F -->|feedback| A
-    style A fill:#4A90E2
-    style C fill:#7ED321
-    style D fill:#F5A623
-    style E fill:#BD10E0
-    style F fill:#50E3C2
+    A["👤 Human<br/>Input Task"] -->|"crew add"| B["📬 Message Bus<br/>SQLite Pub/Sub"]
+    B -->|research| R["🔍 Researcher<br/>Web Search + LLM"]
+    B -->|teach| T["📚 Teacher<br/>Q&A Generation"]
+    B -->|critique| C["⚖️ Critic<br/>Quality Check"]
+    B -->|synthesize| D["🧠 Distiller<br/>Knowledge Synthesis"]
+    R & T & C & D -->|publish| K["💾 Knowledge Store<br/>Hot/Warm/Cold Tiers"]
+    K -->|vectorize| V["⚡ VectorDB<br/>Semantic Search"]
+    V & K -->|query| A
+    style B fill:#50E3C2
+    style R fill:#4A90E2,color:#fff
+    style T fill:#7ED321,color:#000
+    style C fill:#F5A623,color:#fff
+    style D fill:#BD10E0,color:#fff
+    style K fill:#FFE5B4
+    style V fill:#FFFACD
 ```
 
-**Researcher** explores the web, fetches sources, synthesizes findings with LLM or heuristics
-**Teacher** generates Q&A pairs, instruction-response data, and training examples
-**Critic** scores quality, challenges weak claims, flags suspicious patterns
-**Distiller** synthesizes multiple sources, exports LoRA training datasets, writes summaries
-
-### Knowledge Lifecycle
+**What agents do on each message:**
 
 ```mermaid
 graph TD
-    A[New Insight] -->|High Confidence| B[Hot Tier<br/>RAM LRU Cache<br/>1000 entries]
-    A -->|Lower Confidence| C[Warm Tier<br/>SQLite DB<br/>100k entries]
-    B -->|Age > 24h<br/>Score < 0.3| D[Cold Tier<br/>Gzip Files<br/>180d]
-    C -->|Score < 0.3| D
-    D -->|Age > 180d| E[Archive<br/>Summary Only]
-    B <-->|Promote on<br/>Query Hit| C
-    style B fill:#FFE5B4
-    style C fill:#FFFACD
-    style D fill:#E0E0E0
-    style E fill:#A9A9A9
+    MSG["New Message<br/>in Bus"] -->|task_request| ROUTE{Agent<br/>Subscription?}
+    ROUTE -->|researcher| R["Web Search<br/>→ Fetch URLs<br/>→ Synthesize<br/>→ Confidence Score"]
+    ROUTE -->|teacher| T["Extract Text<br/>→ Generate Q&A<br/>→ Format Pairs<br/>→ Rate Quality"]
+    ROUTE -->|critic| C["Evaluate Claim<br/>→ Spot Check Facts<br/>→ Challenge Weak Points<br/>→ Update Confidence"]
+    ROUTE -->|distiller| D["Batch Entries<br/>→ Synthesize<br/>→ Create Summary<br/>→ Export JSONL"]
+    ROUTE -->|no_match| SKIP["Drop"]
+    R & T & C & D -->|publish| K["Knowledge Store"]
+    style R fill:#4A90E2,color:#fff
+    style T fill:#7ED321,color:#000
+    style C fill:#F5A623,color:#fff
+    style D fill:#BD10E0,color:#fff
+    style K fill:#50E3C2,color:#000
 ```
 
-Data moves intelligently: quick access in RAM, cheaper storage as it cools, always searchable.
+---
 
-### Dual Knowledge System
+## The Knowledge Lifecycle
 
 ```mermaid
 graph TB
-    subgraph Sources["Human-Readable Sources (Wiki)"]
-        MD["📄 Markdown Files<br/>- Linked sources<br/>- Author, date<br/>- Evidence chain"]
-    end
-    subgraph Process["Processing"]
-        EXTRACT["Extract<br/>Key Concepts"]
-        EMBED["Embed<br/>Vectors"]
-    end
-    subgraph Fast["Fast Inference (VectorDB)"]
-        VDB["🔍 Vector Search<br/>- Semantic similarity<br/>- Fast lookup<br/>- Top-K retrieval"]
-    end
-    subgraph Serve["User-Facing"]
-        RESP["Response<br/>+ Sources<br/>+ Confidence"]
-    end
+    NEW["🆕 New Insight<br/>Confidence Score"] --> ROUTE{Score?}
+    ROUTE -->|High<br/>≥0.75| HOT["🔥 HOT TIER<br/>RAM Cache<br/>1000 entries<br/>24h expiry<br/>LRU eviction"]
+    ROUTE -->|Medium<br/>0.3-0.75| WARM["🌤️ WARM TIER<br/>SQLite DB<br/>100k entries<br/>30d age<br/>Full-Text Search"]
+    ROUTE -->|Low<br/><0.3| COLD["❄️ COLD TIER<br/>Gzip Files<br/>180d age<br/>Batch Archive"]
 
-    MD --> EXTRACT
-    EXTRACT --> EMBED
-    EMBED --> VDB
-    VDB --> RESP
-    MD --> RESP
+    HOT -->|Age>24h<br/>OR Score↓| WARM
+    WARM -->|Score<0.3<br/>OR Age>30d| COLD
+    COLD -->|Age>180d| ARCH["🗂️ ARCHIVE<br/>Summary Only<br/>Forever"]
 
-    style MD fill:#4A90E2,color:#fff
+    WARM -->|Query Hit<br/>Refresh Score| HOT
+
+    COLD -.->|Daily GC<br/>0.40×conf<br/>0.25×recency<br/>0.20×evidence<br/>0.15×usage| SCORE["Score"]
+    SCORE -.-> ROUTE
+
+    style HOT fill:#FFE5B4
+    style WARM fill:#FFFACD
+    style COLD fill:#D3D3D3
+    style ARCH fill:#A9A9A9,color:#fff
+    style NEW fill:#FF6B6B,color:#fff
+```
+
+---
+
+## The Dual Knowledge System
+
+```mermaid
+graph TB
+    USER["🔍 User Query<br/>e.g. 'LLM scaling laws'"] -->|"crew knowledge query"| VDB["⚡ VectorDB<br/>Semantic Search<br/>O1 latency"]
+
+    VDB -->|Top 3 Results| FETCH["Fetch Source Links"]
+    FETCH -->|Links| WIKI["📖 Wiki<br/>Markdown Files<br/>Traceable Sources"]
+
+    WIKI -->|"Author, Date,<br/>Evidence, Links"| RESP["✅ Response<br/>+ Confidence<br/>+ Sources<br/>+ Chain-of-Thought"]
+    VDB -->|Backlinks| RESP
+
+    WIKI -->|Text| EMB["→ Extract<br/>→ Embed<br/>→ Index"]
+    EMB -->|Vectors| VDB
+
+    style USER fill:#4A90E2,color:#fff
     style VDB fill:#7ED321,color:#000
+    style WIKI fill:#50E3C2,color:#000
     style RESP fill:#F5A623,color:#fff
 ```
 
-Every inference is traceable: the vector database points back to the human-readable wiki.
+---
+
+## Five Use Cases
+
+### 1️⃣ **Interactive Meeting Assistant**
+
+```mermaid
+timeline
+    title Real-Time Strategy Meeting
+    Meeting Start: Get meeting context → Researcher pulls historical data
+    Decision Point 1: Critic flags assumption conflicts → Distiller summarizes context
+    Decision Point 2: Teacher generates talking points → Researcher fetches competitor intel
+    End: Distiller creates action item summary before you leave
+```
+
+**Flow**: Voice/text → Task → Researcher (web) → Critic (challenge) → Distiller (summary) → Wiki + VectorDB
+
+**Benefit**: "Find all pricing discussions" → Sub-second semantic search with sources
 
 ---
 
-## Use Cases: Five Worlds Apart
+### 2️⃣ **Personal Tutor (Grows With You)**
 
-### 1. **Interactive Meeting Assistant**
-*Real-time collaboration, live synthesis*
+```mermaid
+graph LR
+    A["📖 Start Topic<br/>Calculus"] --> B["🔍 Researcher<br/>Finds tutorials<br/>Matches level"]
+    B --> C["📚 Teacher<br/>Generates<br/>Practice problems"]
+    C --> D["✅ Student<br/>Solves"]
+    D --> E["⚖️ Critic<br/>Grades<br/>Provides feedback"]
+    E --> F["🧠 Distiller<br/>Maps gaps<br/>Next topic"]
+    F --> G["📊 Knowledge Map<br/>Your Growth<br/>Over 3 months"]
 
-You're in a 2-hour strategy meeting. The crew:
-- **Researcher** pulls relevant historical decisions, market data, competitor moves (live web search)
-- **Teacher** generates quick reference cards for each decision point (training data generation)
-- **Critic** flags assumptions and challenges half-baked ideas ("We said X last quarter, this contradicts that")
-- **Distiller** synthesizes action items into a meeting summary before you leave the room
+    style B fill:#4A90E2,color:#fff
+    style C fill:#7ED321,color:#000
+    style E fill:#F5A623,color:#fff
+    style F fill:#BD10E0,color:#fff
+    style G fill:#FFE5B4
+```
 
-The wiki captures decision rationale. The vector DB lets you find "all times we discussed pricing changes" in seconds.
+**Flow**: Lesson → Teacher (practice) → Critic (grading) → Distiller (gap analysis) → Personalized curriculum
 
-**Speed goal**: Sub-second latency on semantic queries (VectorDB)
-**Trust goal**: Every claim linked to meeting notes or external source
-
----
-
-### 2. **Personal Tutor That Grows With You**
-*Adaptive learning, knowledge scaffolding*
-
-You're learning machine learning. The crew:
-- **Researcher** finds tutorials, papers, and code examples matched to your level
-- **Teacher** generates personalized exercises: "Here's a problem similar to what we just learned, but with a twist"
-- **Critic** evaluates your work: "Your math is right, but this assumption breaks down when..."
-- **Distiller** builds a knowledge map: "You've mastered neural networks, gaps remain in optimization theory"
-
-After 3 months, the system knows your learning style, your strength areas, your knowledge gaps. It adapts. The wiki becomes your personal learning journal—traceable growth.
-
-**Speed goal**: Sub-second retrieval of "next concept to learn" based on prerequisites
-**Trust goal**: Every exercise backed by peer-reviewed sources or verified implementations
+**Benefit**: System learns your weak points, generates targeted exercises, adapts difficulty
 
 ---
 
-### 3. **Creative Ideation & World-Building**
-*Iterative design, constraint exploration, novelty synthesis*
+### 3️⃣ **Creative World-Building (TTRPG/Games)**
 
-You're building a sci-fi TTRPG world. The crew:
-- **Researcher** finds real-world analogs (How do actual economies handle resource scarcity? What do linguists say about constructed languages?)
-- **Teacher** generates writing prompts: "Given your magic system, what 3 unexpected problems emerge?"
-- **Critic** flags inconsistencies: "You said FTL is impossible but teleportation works—how does this not create paradoxes?"
-- **Distiller** synthesizes faction relationships, timeline coherence, and creates a world bible
+```mermaid
+graph TB
+    WB["🌍 World Idea<br/>Fantasy Kingdom"] --> ITER["Iteration 1"]
 
-Each iteration improves consistency. The wiki becomes your world's source text—rules, history, lore, all with proof. The VectorDB helps you ask: "What scenes involve trade disputes?" or "Which characters have conflicting goals?"
+    ITER --> R1["🔍 Researcher<br/>Real kingdoms<br/>Economic systems<br/>Language roots"]
+    ITER --> T1["📚 Teacher<br/>World Prompts<br/>Story hooks"]
+    ITER --> C1["⚖️ Critic<br/>Flag paradoxes<br/>Challenge logic"]
+    ITER --> D1["📖 Distiller<br/>World Bible<br/>Faction Chart"]
 
-**Speed goal**: Sub-second "show me all lore related to the conflict system"
-**Trust goal**: Every world rule and its consequences visible in the wiki
+    C1 -->|"Inconsistencies"| ITER2["Iteration 2<br/>Refine Rules"]
+    R1 & T1 & D1 -->|"Into Wiki"| WIKI["World Bible<br/>- Rules<br/>- Factions<br/>- Timeline<br/>- Proof"]
 
----
+    WIKI -->|VectorDB| QUERY["'Show all<br/>trade conflicts'<br/>→ Instant List"]
 
-### 4. **Enterprise Research Compiler**
-*Knowledge discovery, pattern extraction, competitive intelligence*
+    style WB fill:#FF6B6B,color:#fff
+    style WIKI fill:#50E3C2
+    style QUERY fill:#7ED321,color:#000
+```
 
-Your biotech team is tracking 200+ research papers monthly. The crew:
-- **Researcher** continuously scans PubMed, arXiv, company announcements for relevant work
-- **Teacher** generates structured summaries: "Here's what each paper says about CRISPR off-targets"
-- **Critic** validates claims: "This startup says they solved issue X—does the data support it?"
-- **Distiller** produces quarterly strategic briefs: "Emerging consensus on treatment Y, 3 major players, timeline 18 months"
+**Flow**: Creative input → Research (analogs) → Critique (consistency) → Synthesize (world bible) → Query (semantic search)
 
-The wiki is your institutional knowledge base—auditable, traceable to sources, searchable by date. The VectorDB enables "find all work on this protein family" in milliseconds.
-
-**Speed goal**: Weekly automated briefings, instant document retrieval
-**Trust goal**: Every claim source-linked to papers, with confidence scores
+**Benefit**: Consistency checking, real-world grounding, instant lore lookup
 
 ---
 
-### 5. **Narrative Game Engine with Persistent Lore**
-*Dynamic storytelling, character-driven plots, evolving mythology*
+### 4️⃣ **Enterprise Research Compiler**
 
-You're running a procedurally-assisted narrative game. The crew:
-- **Researcher** fetches narrative precedents: "In what other games did characters defy prophecy? How did it work?"
-- **Teacher** generates plot branches: "If the player does X, here are 5 plausible story directions"
-- **Critic** maintains character consistency: "This NPC previously said Y, can't contradict it without narrative reason"
-- **Distiller** tracks mythology: "Here's the complete lore thread for the Sunken Kingdom, with all mentions across the narrative"
+```mermaid
+graph LR
+    STREAM["📰 200+ Papers/Mo<br/>PubMed, arXiv,<br/>News"] -->|Daily| R["🔍 Researcher<br/>Auto-scan<br/>Filter relevance"]
+    R --> T["📚 Teacher<br/>Structured<br/>Summary"]
+    T --> C["⚖️ Critic<br/>Validate Claims<br/>Check Evidence"]
+    C --> D["📊 Distiller<br/>Quarterly Brief<br/>Consensus Map"]
+    D --> WIKI["🏛️ Institution<br/>Knowledge Base<br/>Auditable<br/>Traceable"]
+    WIKI --> VDB["⚡ Search<br/'Find all protein<br/>family work'"]
 
-Players see a hand-crafted story, but it's informed by patterns learned across thousands of narrative examples. The wiki becomes the game's narrative bible—every character backstory, every location, every plot point, all with reasoning.
+    style R fill:#4A90E2,color:#fff
+    style T fill:#7ED321,color:#000
+    style C fill:#F5A623,color:#fff
+    style D fill:#BD10E0,color:#fff
+    style WIKI fill:#50E3C2
+```
 
-**Speed goal**: Real-time plot suggestions, <100ms NPC behavior generation
-**Trust goal**: Every story decision grounded in lore consistency
+**Flow**: Paper stream → Filter → Summarize → Validate → Synthesize → Archive → Audit trail
 
----
-
-## Architecture: Designed for Scale & Resilience
-
-### Hardware Profiles
-AutoCrew auto-detects your hardware and adapts:
-
-| Device | Agents | Model Size | Backend | Use Case |
-|--------|--------|------------|---------|----------|
-| **Jetson Nano** | 2 | 3B params | llama.cpp (Q4) | Edge devices, always-on |
-| **Jetson Orin** | 4 | 13B params | llama.cpp (Q5) | Embedded servers |
-| **Laptop GPU** (RTX 4050) | 4 | 13B params | llama.cpp (Q5) | Developer machines |
-| **Workstation** | 8 | 70B params | vLLM (fp16) | High-throughput local |
-| **Multi-GPU** | 16 | 70B+ params | Tensor parallel | Enterprise clusters |
-| **Cloud** | 32 | Any | API-only (CF Workers AI) | Unlimited scale, cost-conscious |
-| **CPU-only** | 2 | 3B params | llama.cpp (Q4) | Fallback mode |
-
-### Knowledge Storage Strategy
-- **Hot**: RAM (1000 entries, LRU eviction, 24h expiry)
-- **Warm**: SQLite with FTS5 (100k entries, 30d retention, scored)
-- **Cold**: gzip JSON files (180d history, batch archived)
-- **Archive**: Summary-only persistent storage
-
-GC runs nightly, scoring entries on: confidence (40%), recency (25%), evidence quality (20%), usage frequency (15%).
-
-### Cloudflare Free-Tier Gaming
-Automatically optimizes API usage around free limits:
-
-| Service | Daily Limit | Agent Strategy |
-|---------|------------|-----------------|
-| **Workers AI** | 10k neurons | Teacher batches instruction gen at 70% usage, end-of-day burn |
-| **D1** | 25M reads, 50k writes | Warm tier batches, cache research results |
-| **R2** | 10GB storage, 1M ops/mo | Cold tier archives, monthly compaction |
-| **KV** | 100k reads, 1k writes/day | Credit-aware task prioritization |
+**Benefit**: Institutional memory, source-linked claims, instant competitor tracking
 
 ---
 
-## Getting Started
+### 5️⃣ **Narrative Game Engine**
 
-### Single-Agent Mode (Original Workflow)
+```mermaid
+graph TB
+    GAME["🎮 Player Action<br/>Defy Prophecy?"] -->|Query| R["🔍 Researcher<br/>Narrative patterns<br/>Precedents"]
+    GAME -->|Consistency| C["⚖️ Critic<br/>NPC History<br/>Continuity Check"]
+    R & C --> T["📚 Teacher<br/>Generate<br/>5 Plot Paths"]
+    T --> PLAYER["Player Chooses"]
+    PLAYER -->|New State| D["🧠 Distiller<br/>Update Lore<br/>Track threads"]
+    D --> WIKI["📖 Narrative Bible<br/>Every decision<br/>Every thread<br/>Every consequence"]
+
+    style GAME fill:#FF6B6B,color:#fff
+    style R fill:#4A90E2,color:#fff
+    style C fill:#F5A623,color:#fff
+    style T fill:#7ED321,color:#000
+    style D fill:#BD10E0,color:#fff
+    style WIKI fill:#50E3C2
+```
+
+**Flow**: Player input → Pattern matching → Consistency check → Generate branches → Execute → Record → Update lore
+
+**Benefit**: Dynamic storytelling grounded in persistent, traceable lore
+
+---
+
+## Hardware Scaling
+
+```mermaid
+graph LR
+    AUTO["🔍 Auto-Detect<br/>Hardware"] -->|Jetson device<br/>tree| NANO["Jetson Nano<br/>2 agents<br/>Q4 Quantization"]
+    AUTO -->|CUDA<br/>Check| ORIN["Jetson Orin<br/>4 agents<br/>Q5"]
+    AUTO -->|VRAM<br/>Check| LAP["Laptop GPU<br/>RTX 4050<br/>4 agents<br/>Q5"]
+    AUTO -->|Multi-GPU| WS["Workstation<br/>8 agents<br/>fp16/vLLM"]
+    AUTO -->|Tensor<br/>parallel| MULTI["Multi-GPU<br/>16 agents<br/>Tensor Parallel"]
+    AUTO -->|No GPU| CPU["CPU-only<br/>2 agents<br/>Q4"]
+    AUTO -->|Cloud<br/>API| CLOUD["Cloud<br/>32 agents<br/>CF Workers AI"]
+
+    style NANO fill:#FF6B6B,color:#fff
+    style ORIN fill:#F5A623
+    style LAP fill:#7ED321,color:#000
+    style WS fill:#4A90E2,color:#fff
+    style MULTI fill:#BD10E0,color:#fff
+    style CPU fill:#A9A9A9,color:#fff
+    style CLOUD fill:#50E3C2
+```
+
+---
+
+## Cloudflare Credit Gaming
+
+```mermaid
+graph TD
+    RESET["⏰ Daily Reset<br/>00:00 UTC"] -->|Monitor| USAGE["🔍 Usage Tracker<br/>Workers AI<br/>D1, R2, KV"]
+
+    USAGE -->|≤70%| FREE["🟢 FREE<br/>Normal Speed"]
+    USAGE -->|70-85%| THROTTLE["🟡 THROTTLE<br/>Batch Tasks<br/>Lower Priority"]
+    USAGE -->|85-95%| BURN["🔴 BURN<br/>Use Credits<br/>End-of-Day"]
+    USAGE -->|≥95%| BLOCK["⛔ BLOCKED<br/>Local Fallback"]
+
+    BURN -->|23:45 UTC| EOD["🔥 End-of-Day<br/>Batch<br/>- Instruction Gen<br/>- Summary Writing<br/>- Archive Sync"]
+    EOD -->|Use Last<br/>Remaining| CREDIT["💰 Spend Credits<br/>Before Reset"]
+
+    style FREE fill:#7ED321
+    style THROTTLE fill:#F5A623
+    style BURN fill:#FF6B6B,color:#fff
+    style BLOCK fill:#A9A9A9,color:#fff
+    style EOD fill:#BD10E0,color:#fff
+```
+
+---
+
+## Core Commands
+
+```mermaid
+graph TD
+    CREW["crew"]
+
+    CREW -->|"🚀 start"| START["Single-Agent<br/>or --swarm flag"]
+    CREW -->|"➕ add"| ADD["New task<br/>to scheduler"]
+    CREW -->|"🎯 agents"| AGENTS["status/spawn<br/>Agent management"]
+    CREW -->|"💾 knowledge"| KB["query/gc/<br/>export-lora"]
+    CREW -->|"⚡ cf"| CF["status/burn<br/>Credit tracking"]
+    CREW -->|"📋 board"| BOARD["Show task board"]
+
+    style CREW fill:#4A90E2,color:#fff
+    style START fill:#7ED321,color:#000
+    style ADD fill:#F5A623
+    style AGENTS fill:#BD10E0,color:#fff
+    style KB fill:#50E3C2
+    style CF fill:#FFE5B4
+```
+
+---
+
+## Quick Start
+
 ```bash
+# Single-agent (research mode)
 crew start
 crew add "Research neural scaling laws"
 crew board
-crew knowledge query --tag "scaling" --min-confidence high
-```
 
-### Multi-Agent Swarm Mode (Collaborative)
-```bash
+# Multi-agent swarm (collaborative)
 crew start --swarm
-# Agents work independently, publishing findings to shared knowledge base
+crew agents status
+crew knowledge query --tag "scaling" --min-confidence high
 
-crew agents status                                    # Monitor health
-crew knowledge query --tag "research" --limit 20     # Search KB
-crew cf status                                        # Check credit usage
-```
-
-### Knowledge Management
-```bash
-# Build training datasets from the KB
-crew knowledge query --tag "ml" --export-lora lora_dataset.jsonl
-
-# Run garbage collection
-crew knowledge gc
-
-# Generate weekly summary
-crew knowledge summarize --period weekly
+# Knowledge management
+crew knowledge gc                           # Garbage collection
+crew knowledge query --tag "ml" --export-lora dataset.jsonl
 ```
 
 ---
 
 ## Why AutoCrew?
 
-### ✅ Local-First
-Every component has a fallback. No internet? Works offline with cached knowledge. No GPU? Uses quantized models. No API key? Uses heuristics.
-
-### ✅ Interpretable
-The dual wiki+vectordb system means you always know *why* an answer was returned. Every claim is traceable.
-
-### ✅ Scalable
-From a Jetson Nano in an IoT deployment to multi-GPU research clusters. One config file, auto-detects hardware.
-
-### ✅ Cost-Conscious
-Built-in Cloudflare free-tier optimization. Teacher agent paces work to end just before credit resets. No surprise bills.
-
-### ✅ Extensible
-The message bus and agent pool make it trivial to add new specialized agents (e.g., ScientistAgent, DesignAgent, ProgrammerAgent).
-
----
-
-## System Architecture
-
 ```mermaid
 graph TB
-    CLI["🎮 CLI (24 commands)"]
+    AC["AutoCrew"] -->|"🏠 Local-First"| LF["Every component<br/>has a fallback<br/>→ Works offline<br/>→ No surprise costs"]
 
-    subgraph Daemon["Daemon"]
-        CD["CrewDaemon<br/>(Single-Agent)"]
-        SW["SwarmOrchestrator<br/>(Multi-Agent)"]
-    end
+    AC -->|"🔗 Interpretable"| INT["Wiki + VectorDB<br/>Always traceable<br/>→ Know why<br/>→ Follow sources"]
 
-    subgraph Pool["Agent Pool"]
-        RA["Researcher"]
-        TA["Teacher"]
-        CA["Critic"]
-        DA["Distiller"]
-    end
+    AC -->|"📈 Scalable"| SCALE["Auto-detects<br/>hardware<br/>Nano → Cloud<br/>→ Same code"]
 
-    subgraph Knowledge["Knowledge System"]
-        KB["Knowledge Store<br/>(Hot/Warm/Cold)"]
-        VDB["VectorDB<br/>(Embeddings)"]
-        WIKI["Wiki<br/>(Markdown)"]
-    end
+    AC -->|"💰 Cost-Smart"| COST["Credit gaming<br/>Teacher paces work<br/>→ No overage<br/>→ Auto-burn"]
 
-    subgraph Integration["Integration Layer"]
-        MB["Message Bus<br/>(SQLite)"]
-        SCHED["Scheduler<br/>(Task Distribution)"]
-        CF["Cloudflare<br/>(Credits)"]
-    end
+    AC -->|"🔧 Extensible"| EXT["Message bus<br/>makes agents<br/>plug-and-play<br/>→ Add ScientistAgent<br/>→ Add DesignAgent"]
 
-    subgraph Fallback["Fallback Services"]
-        LKV["LocalKV"]
-        LD1["LocalD1"]
-        LR2["LocalR2"]
-        LOL["LocalOllama"]
-    end
-
-    CLI --> CD
-    CLI --> SW
-    CD --> MB
-    SW --> Pool
-    Pool --> MB
-    MB --> KB
-    KB --> VDB
-    KB --> WIKI
-    CF --> Pool
-    SCHED --> Pool
-    KB -.->|Fallback| Fallback
-
-    style CLI fill:#4A90E2,color:#fff
-    style Pool fill:#7ED321,color:#000
-    style KB fill:#F5A623,color:#fff
-    style Integration fill:#50E3C2,color:#000
+    style LF fill:#7ED321,color:#000
+    style INT fill:#50E3C2
+    style SCALE fill:#4A90E2,color:#fff
+    style COST fill:#FFE5B4
+    style EXT fill:#BD10E0,color:#fff
 ```
 
 ---
 
-## Knowledge Representation: Wiki + Vector DB
+## Testing & Status
 
-### The Wiki (Source of Truth)
-```markdown
-# Neural Network Scaling
+```mermaid
+graph TD
+    TESTS["15 Test Suites"] -->|✅| SYNTAX["Syntax Validation"]
+    TESTS -->|✅| IMPORTS["Core Imports"]
+    TESTS -->|✅| CONFIG["Configuration"]
+    TESTS -->|✅| AGENTS["4 Agents"]
+    TESTS -->|✅| BUS["Message Bus"]
+    TESTS -->|✅| KB["Knowledge Store"]
+    TESTS -->|✅| CREDITS["Credit Tracking"]
+    TESTS -->|✅| FALLBACK["Fallback Services"]
 
-**Date**: 2025-03-18
-**Sources**: [Kaplan et al. 2020](https://arxiv.org/...), [Chinchilla Scaling Laws](https://arxiv.org/...)
-**Confidence**: High
-**Tags**: #scaling #transformers #training
+    SYNTAX & IMPORTS & CONFIG & AGENTS & BUS & KB & CREDITS & FALLBACK -->|READY| PROD["🚀 Production"]
 
-## Key Finding
-Compute-optimal models have D:C ratio of ~20:1 (data to compute tokens).
-
-## Evidence
-- GPT-3 (175B) suboptimal by ~10x training tokens
-- Chinchilla (70B) match performance on 4x less training data
-- Stable diffusion scaling follows similar pattern
-
-## Implications
-- Storage requirements reduced significantly
-- Training time bottleneck → sampling diversity matters more
+    style PROD fill:#7ED321,color:#000,stroke:#000,stroke-width:3px
 ```
 
-### The Vector DB (Fast Inference)
+---
+
+## File Structure
+
 ```
-Query: "How much data do I need for 70B model?"
-  ↓
-Vector search → Top-3 results:
-  1. Neural Network Scaling (source: wiki/2025-03-18)
-  2. Training Data Efficiency (source: wiki/2025-03-15)
-  3. Chinchilla Report (source: wiki/2025-02-20)
-  ↓
-Return: "Chinchilla (70B) achieves GPT-3 performance with 4x less training data.
-         See: wiki/2025-03-18 for full analysis."
+crew/
+├── daemon.py              # Entry point (single/swarm)
+├── cli.py                 # 24 Commands
+├── scheduler.py           # Task board
+├── agents/
+│   ├── base.py            # BaseAgent interface
+│   ├── pool.py            # AgentPool manager
+│   ├── researcher.py      # Web search
+│   ├── teacher.py         # Q&A generation
+│   ├── critic.py          # Quality check
+│   └── distiller.py       # Synthesis
+├── messaging/
+│   └── bus.py             # SQLite pub/sub
+├── knowledge/
+│   ├── store.py           # Hot/warm/cold tiers
+│   └── lifecycle.py       # GC + scoring
+├── cloudflare/
+│   ├── credits.py         # Limit tracking
+│   └── fallback.py        # LocalKV/D1/R2/AI
+└── hardware/
+    └── detector.py        # Profile detection
 ```
 
-Every vector DB result points back to the wiki. Every wiki entry is optional but recommended.
-
 ---
 
-## Testing & Validation
+**Local. Interpretable. Scalable. Extensible. Cost-conscious.**
 
-All core systems have been tested and validated:
-- ✅ **15 test suites** passed (syntax, imports, integration, error handling)
-- ✅ **8 modules** verified (daemon, CLI, agents, message bus, knowledge, credits, fallbacks, hardware)
-- ✅ **4 concrete agents** fully functional
-- ✅ **Dual knowledge system** operational (wiki + vectordb)
-- ✅ **Hardware detection** working (7 profiles)
-- ✅ **Credit tracking** live (Cloudflare free-tier optimization)
-
----
-
-## Next Steps
-
-- **Run the system**: `crew start --swarm`
-- **Check agents**: `crew agents status`
-- **Add knowledge**: `crew add "Your research topic"`
-- **Query KB**: `crew knowledge query --tag "topic" --limit 10`
-- **Build datasets**: `crew knowledge export-lora --output dataset.jsonl`
-
----
-
-## Architecture & Docs
-
-- **[SWARM_ARCHITECTURE.md](docs/SWARM_ARCHITECTURE.md)** — Deep dive into agent roles, message bus, hardware profiles
-- **[KNOWLEDGE_LIFECYCLE.md](docs/KNOWLEDGE_LIFECYCLE.md)** — Hot/warm/cold/archive, GC strategies, scoring
-- **[CLOUDFLARE_INTEGRATION.md](docs/CLOUDFLARE_INTEGRATION.md)** — Credit tracking, free-tier gaming, fallback services
-- **[AGENT_DEVELOPMENT.md](docs/AGENT_DEVELOPMENT.md)** — Building custom agents
-- **[CLI_REFERENCE.md](docs/CLI_REFERENCE.md)** — Complete command reference
-
----
-
-## License
-
-MIT
-
----
-
-**Built by humans for humans. Always interpretable, always traceable, always in control.**
+MIT License • [Docs](docs/) • [Issues](../../issues)
