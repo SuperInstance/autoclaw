@@ -6,20 +6,38 @@
 
 ## 🚀 Getting Started
 
+### 👤 For Users
 **New to AutoClaw?** Start here:
 
 | Guide | Time | For |
 |-------|------|-----|
-| **[ONBOARDING.md](ONBOARDING.md)** | 5 min | Complete beginners - read this first! |
-| **[QUICKSTART.md](QUICKSTART.md)** | 10 min | Quick installation & first commands |
-| **[INSTALL.md](INSTALL.md)** | 5 min | Detailed installation troubleshooting |
-| **[docs/COMPLETE_GUIDE.md](docs/COMPLETE_GUIDE.md)** | 30 min | Full feature documentation |
+| **[ONBOARDING.md](ONBOARDING.md)** | 5-15 min | Complete beginners - read this first! |
+| **[QUICKSTART.md](QUICKSTART.md)** | 10-30 min | Detailed installation & configuration |
+| **[INSTALL.md](INSTALL.md)** | 5-15 min | Platform-specific troubleshooting |
+| **[docs/COMPLETE_GUIDE.md](docs/COMPLETE_GUIDE.md)** | 30+ min | Full feature documentation |
 
-**Quick Install:**
+### 🤖 For AI Agents & Claude Code
+**Want to set up AutoClaw automatically?** Start here:
+
+| Guide | Purpose | Usage |
+|-------|---------|-------|
+| **[CLAUDE_CODE_SETUP.md](CLAUDE_CODE_SETUP.md)** | Quick agent setup | For Claude Code users |
+| **[A2A_AGENT_MANUAL.md](A2A_AGENT_MANUAL.md)** | Complete agent reference | Full system understanding |
+| **[A2A_SETUP_SCRIPT.py](A2A_SETUP_SCRIPT.py)** | Automated installation | `python3 A2A_SETUP_SCRIPT.py` |
+| **[A2A_SYSTEM_METADATA.json](A2A_SYSTEM_METADATA.json)** | Machine-readable config | Agent parsing/integration |
+
+**Quick Setup - Users:**
 ```bash
 git clone https://github.com/your-org/autoclaw.git && cd autoclaw
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt && crew health
+```
+
+**Quick Setup - Agents:**
+```bash
+python3 A2A_SETUP_SCRIPT.py    # Fully automated setup
+crew health                     # Verify installation
+crew start                      # Start daemon
 ```
 
 ---
