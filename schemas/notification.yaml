@@ -1,0 +1,254 @@
+# ============================================================================
+# NOTIFICATION SCHEMA
+# ============================================================================
+# Notifications are how the crew communicates with the captain. They are
+# one-directional: crew → captain. The captain reads them when they want.
+#
+# Design principle: The crew notifies, it doesn't nag. Important findings
+# are recorded once. The captain checks when they're ready. No popups,
+# no blocking, no "are you still there?"
+#
+# IMPLEMENTATION NOTES FOR HAIKU:
+# - Notifications stored in data/notifications/{id}.yaml
+# - Also maintained as append-only log: data/notifications/feed.log
+# - feed.log format: {timestamp}\t{severity}\t{type}\t{title}\n
+# - Captain reads via CLI: `crew notifications` or `crew feed`
+# - Unread count tracked in data/notifications/unread_count
+# - Notifications older than 30 days auto-archived to data/notifications/archive/
+# ============================================================================
+
+notification:
+  id:
+    type: integer
+    description: "Monotonically increasing notification ID"
+    generated: true
+
+  type:
+    type: enum
+    values:
+      - task_complete     # A task finished (success or failure)
+      - finding           # Something interesting was discovered
+      - alert             # Something needs captain attention (error, resource issue)
+      - trigger_fire      # An external trigger activated
+      - study_insight     # Self-study produced an interesting result
+      - milestone         # Significant achievement (new best metric, Nth experiment)
+      - status_change     # Mode changed, started/stopped, etc.
+      - weekly_summary    # Periodic summary of activity
+    description: |
+      Type determines how the notification is displayed:
+        task_complete   → "Task #42 done: [summary]"
+        finding         → "Finding: [what was discovered]"
+        alert           → "ALERT: [what happened]"
+        trigger_fire    → "Trigger [name] fired: [what matched]"
+        study_insight   → "Study: [what was learned]"
+        milestone       → "Milestone: [what was achieved]"
+        status_change   → "Status: [what changed]"
+        weekly_summary  → "Weekly: [summary]"
+
+  severity:
+    type: enum
+    values:
+      - info        # FYI — captain reads when convenient
+      - important   # Should read within 24 hours
+      - urgent      # Needs attention now (errors, resource critical)
+    default: info
+    description: |
+      Severity affects display and optional external notification:
+        info      → Quiet. Appears in feed, no external alert.
+        important → Highlighted in feed. Optional: email/webhook.
+        urgent    → Top of feed. Optional: SMS/push notification.
+
+  title:
+    type: string
+    max_length: 120
+    description: "One-line summary. Must be self-contained (readable without body)."
+    example: "Task #42 complete: LR sweep found 1.2% improvement with cosine annealing"
+
+  body:
+    type: string
+    max_length: 5000
+    description: |
+      Full details. Markdown supported. Should include:
+      - What happened
+      - Why it matters
+      - What the crew recommends (if anything)
+      - Link to relevant task/experiment
+    example: |
+      ## LR Sweep Complete
+
+      **Best result:** LR=0.005 with cosine annealing → val_bpb=1.006
+      **Improvement:** 1.2% over baseline (1.018)
+      **Experiments run:** 20
+
+      ### Key findings:
+      - Cosine annealing consistently outperforms fixed LR at same base rate
+      - Optimal LR with cosine is slightly lower than with fixed (0.005 vs 0.0048)
+      - Diminishing returns above 15 experiments — early stopping at 15 would have found same result
+
+      ### Recommendation:
+      Consider task #44 (cyclic LR with warm restarts) as follow-up.
+
+      **Commit:** a3f2c1d (checkout to reproduce)
+
+  task_id:
+    type: integer
+    nullable: true
+    description: "Related task, if any"
+
+  trigger_id:
+    type: integer
+    nullable: true
+    description: "Related trigger, if any"
+
+  read:
+    type: boolean
+    default: false
+    description: "Whether the captain has read this notification"
+
+  created_at:
+    type: datetime
+    generated: true
+
+  read_at:
+    type: datetime
+    nullable: true
+
+# --- NOTIFICATION RULES ---
+# The crew creates notifications at these events:
+#
+# AUTOMATIC (always notify):
+#   - Task completed → task_complete (info or important based on results)
+#   - Task failed → task_complete (important)
+#   - GPU temp > threshold → alert (urgent)
+#   - Disk space > threshold → alert (important)
+#   - New best metric achieved → milestone (important)
+#   - Daemon restarted → status_change (info)
+#   - Trigger fired and created task → trigger_fire (info)
+#
+# CREW-INITIATED (crew decides when):
+#   - Interesting finding during experiments → finding (info or important)
+#   - Study session produced insight → study_insight (info)
+#   - Pattern noticed across experiments → finding (important)
+#
+# SCHEDULED:
+#   - Weekly summary → weekly_summary (info) — every Friday 6pm
+#   - Daily digest (optional) → weekly_summary with daily scope
+#
+# NOTIFICATION DEDUPLICATION:
+#   - Same title within 1 hour → skip (prevents spam)
+#   - Same trigger_id within cooldown period → skip
+#   - Severity escalation: if existing notification is info but new one
+#     is urgent for same issue, create new notification
+
+# --- EXTERNAL NOTIFICATION CHANNELS ---
+# Optional: captain can configure external delivery for important/urgent
+# notifications. Configured in config.yaml, not in the notification schema.
+#
+# Channels:
+#   - webhook: POST to URL with JSON payload
+#   - email: Send via SMTP (requires config)
+#   - file: Append to a file (simplest)
+#   - command: Run shell command with notification as stdin
+
+# --- EXAMPLES ---
+
+examples:
+  task_complete:
+    id: 156
+    type: task_complete
+    severity: important
+    title: "Task #42 complete: cosine LR sweep found 1.2% improvement"
+    body: |
+      LR sweep with cosine annealing completed successfully.
+      Best: LR=0.005, val_bpb=1.006 (1.2% improvement over 1.018 baseline)
+      Experiments: 20 run, 18 successful, 2 diverged
+      GPU time: 1.7 hours
+      Commit: a3f2c1d
+
+      Suggested follow-up: Test cyclic LR with warm restarts (task #45 created)
+    task_id: 42
+    read: false
+    created_at: "2026-03-18T12:30:00Z"
+
+  finding:
+    id: 157
+    type: finding
+    severity: important
+    title: "Finding: weight decay interacts strongly with cosine annealing"
+    body: |
+      While running task #42, noticed that experiments with WD>0.02 showed
+      2x larger benefit from cosine annealing than WD<0.01 experiments.
+
+      This suggests weight decay and LR scheduling are not independent —
+      optimizing them jointly could yield additional gains.
+
+      Recommendation: Create experiment task to test WD × LR_schedule grid.
+    task_id: 42
+    read: false
+    created_at: "2026-03-18T11:45:00Z"
+
+  alert:
+    id: 158
+    type: alert
+    severity: urgent
+    title: "ALERT: Disk space at 92% — archiving old experiments"
+    body: |
+      Disk usage: 230GB / 250GB (92%)
+      Cause: 47 experiment checkpoints from last week (180GB)
+
+      Action taken:
+      - Paused current task (#42)
+      - Created maintenance task (#46) to archive old checkpoints
+      - Will move experiments older than 7 days to cold storage
+      - Expected to free ~120GB
+
+      Manual action needed if archive target is full.
+    task_id: null
+    trigger_id: 4
+    read: false
+    created_at: "2026-03-18T13:00:00Z"
+
+  milestone:
+    id: 159
+    type: milestone
+    severity: important
+    title: "Milestone: New best val_bpb = 0.994 (experiment #312)"
+    body: |
+      New all-time best performance achieved!
+
+      Previous best: 1.006 (experiment #287, task #38)
+      New best: 0.994 (experiment #312, task #42)
+      Improvement: 1.2%
+
+      Configuration:
+        learning_rate: 0.005
+        lr_schedule: cosine
+        warmup_steps: 100
+        weight_decay: 0.01
+
+      Commit: e7b3a01 (checkout to use this model)
+    task_id: 42
+    read: false
+    created_at: "2026-03-18T12:15:00Z"
+
+  study_insight:
+    id: 160
+    type: study_insight
+    severity: info
+    title: "Study insight: DEPTH × LR interaction is significant"
+    body: |
+      During self-study (no captain task), ran 9-experiment grid:
+      DEPTH=[4,8,12] × LR=[0.003,0.005,0.008]
+
+      Results:
+        DEPTH=4:  best LR=0.008 (val_bpb=1.124)
+        DEPTH=8:  best LR=0.005 (val_bpb=0.994) — confirms known result
+        DEPTH=12: best LR=0.003 (val_bpb=0.987) — NEW FINDING
+
+      Insight: Optimal LR decreases as depth increases, roughly as LR ∝ 1/sqrt(DEPTH).
+      This is consistent with mean-field theory predictions.
+
+      If captain is considering deeper models, LR should be reduced proportionally.
+    task_id: 44
+    read: false
+    created_at: "2026-03-19T03:20:00Z"

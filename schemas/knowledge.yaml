@@ -1,0 +1,294 @@
+# ============================================================================
+# KNOWLEDGE SCHEMA
+# ============================================================================
+# The knowledge base is the crew's memory. It stores everything the crew has
+# learned from experiments, studies, papers, and observations. This is what
+# makes the crew get smarter over time.
+#
+# The knowledge base is NOT a database of raw experiment results (those are
+# in git commits and results.tsv). Instead, it stores INSIGHTS — distilled
+# understanding that helps the crew make better decisions.
+#
+# Think of it as the crew's notebook: "Things I've learned that I should
+# remember when making future decisions."
+#
+# IMPLEMENTATION NOTES FOR HAIKU:
+# - Knowledge stored at data/crew/knowledge.yaml
+# - Each entry is a self-contained insight
+# - Entries are tagged for retrieval
+# - When the crew plans experiments, it queries relevant knowledge first
+# - Knowledge entries can be marked outdated (superseded by newer findings)
+# - Maximum 500 entries. When full, oldest low-confidence entries pruned.
+# ============================================================================
+
+knowledge_entry:
+  id:
+    type: integer
+    generated: true
+
+  # --- What was learned ---
+  insight:
+    type: string
+    max_length: 500
+    description: |
+      A single, clear statement of what was learned. Must be actionable —
+      something the crew can use when planning future experiments.
+
+      Good: "Optimal LR decreases as model depth increases, roughly LR ∝ 1/sqrt(DEPTH)"
+      Bad: "Ran some LR experiments"
+
+      Good: "Weight decay > 0.05 causes underfitting for models with DEPTH <= 8"
+      Bad: "Weight decay is important"
+    example: "Cosine annealing improves val_bpb by 0.8-1.5% over fixed LR schedule at the same base rate"
+
+  # --- Context ---
+  category:
+    type: enum
+    values:
+      - hyperparameter     # About optimal parameter values and interactions
+      - architecture       # About model architecture choices
+      - training_dynamics  # About training behavior (convergence, stability)
+      - data               # About data properties and their effect on training
+      - infrastructure     # About GPU, memory, performance characteristics
+      - methodology        # About experimental methodology and best practices
+      - external           # From papers, news, external sources
+    description: "Broad category for filtering"
+
+  tags:
+    type: list
+    items:
+      type: string
+    description: "Specific topics this insight relates to"
+    example: ["learning-rate", "cosine-annealing", "lr-schedule"]
+
+  # --- Evidence ---
+  evidence:
+    type: object
+    description: "What supports this insight"
+    fields:
+      source_task_ids:
+        type: list
+        items:
+          type: integer
+        description: "Which tasks produced this insight"
+        example: [38, 42]
+
+      experiments_supporting:
+        type: integer
+        description: "Number of experiments that support this insight"
+        example: 15
+
+      experiments_contradicting:
+        type: integer
+        default: 0
+        description: "Number of experiments that contradict this insight"
+
+      key_commits:
+        type: list
+        items:
+          type: string
+        description: "Git commits of the most important supporting experiments"
+        example: ["a3f2c1d", "e7b3a01"]
+
+      metric_range:
+        type: object
+        nullable: true
+        description: "Range of metric values observed"
+        fields:
+          metric:
+            type: string
+            example: "val_bpb"
+          best:
+            type: float
+          worst:
+            type: float
+          baseline:
+            type: float
+
+  # --- Confidence ---
+  confidence:
+    type: enum
+    values:
+      - low          # Based on 1-2 experiments or indirect evidence
+      - medium       # Based on 3-5 experiments with consistent results
+      - high         # Based on 6+ experiments, replicated, no contradictions
+      - very_high    # Extensively tested, consistent with theory, no exceptions found
+    description: |
+      How much the crew trusts this insight. Affects how strongly it
+      influences future decisions:
+        low       → Consider but don't rely on
+        medium    → Use as default assumption, test if critical
+        high      → Treat as reliable fact
+        very_high → Foundation knowledge, build on it
+
+  # --- Applicability ---
+  conditions:
+    type: string
+    max_length: 300
+    nullable: true
+    description: |
+      Under what conditions this insight holds. Important for preventing
+      over-generalization.
+    example: "Tested with DEPTH=8, VOCAB_SIZE=8192, batch_size=32. May not hold for very different configurations."
+
+  # --- Lifecycle ---
+  status:
+    type: enum
+    values:
+      - active       # Currently believed to be true
+      - outdated     # Superseded by newer insight (keep for history)
+      - questioned   # New evidence contradicts this; needs re-testing
+    default: active
+
+  superseded_by:
+    type: integer
+    nullable: true
+    description: "If status=outdated, which newer entry replaces this"
+
+  created_at:
+    type: datetime
+    generated: true
+
+  last_validated:
+    type: datetime
+    nullable: true
+    description: "Last time this insight was confirmed by new experiments"
+
+  # --- Connections ---
+  related_entries:
+    type: list
+    items:
+      type: integer
+    default: []
+    description: "Other knowledge entries that relate to this one"
+
+# ============================================================================
+# KNOWLEDGE RETRIEVAL
+# ============================================================================
+# When the crew plans experiments, it queries knowledge like this:
+#
+#   crew.knowledge.query(
+#     tags=["learning-rate", "cosine-annealing"],
+#     category="hyperparameter",
+#     min_confidence="medium",
+#     status="active"
+#   )
+#
+# Returns matching entries sorted by confidence (highest first).
+# The crew uses these to:
+#   1. Set initial parameter ranges (don't waste time on known-bad values)
+#   2. Identify interactions (if LR and WD interact, test them together)
+#   3. Avoid repeating experiments (already know this doesn't work)
+#   4. Build on previous findings (start from known-good config)
+# ============================================================================
+
+# ============================================================================
+# KNOWLEDGE ACCUMULATION RULES
+# ============================================================================
+# The crew creates knowledge entries at these points:
+#
+# 1. AFTER COMPLETING A TASK:
+#    - Review results for generalizable insights
+#    - Create entry for each non-obvious finding
+#    - Link to supporting experiments
+#    - Set confidence based on evidence
+#
+# 2. DURING STUDY MODE:
+#    - Cross-reference historical experiments
+#    - Identify patterns across tasks
+#    - Look for contradictions in existing knowledge
+#    - Upgrade/downgrade confidence of existing entries
+#
+# 3. FROM EXTERNAL SOURCES:
+#    - Papers reviewed via triggers → category: external
+#    - Confidence: low (until validated by local experiments)
+#    - Create follow-up study task to validate
+#
+# 4. KNOWLEDGE MAINTENANCE (periodic):
+#    - Review entries with last_validated > 30 days
+#    - Check if conditions have changed (new model configs)
+#    - Mark outdated entries
+#    - Merge related entries if they've converged
+#    - Prune low-confidence entries when approaching 500 limit
+# ============================================================================
+
+# --- EXAMPLES ---
+
+examples:
+  hyperparameter_insight:
+    id: 1
+    insight: "Optimal learning rate for DEPTH=8 model is 0.0048 (±0.001). Rates above 0.01 cause training instability."
+    category: hyperparameter
+    tags: ["learning-rate", "depth-8", "stability"]
+    evidence:
+      source_task_ids: [12, 28, 35, 42]
+      experiments_supporting: 24
+      experiments_contradicting: 0
+      key_commits: ["e7b3a01", "a3f2c1d"]
+      metric_range:
+        metric: "val_bpb"
+        best: 0.994
+        worst: 1.041
+        baseline: 1.041
+    confidence: very_high
+    conditions: "DEPTH=8, VOCAB_SIZE=8192, OpenWebText. May differ for other depths (see entry #15)."
+    status: active
+    superseded_by: null
+    created_at: "2026-03-17T22:00:00Z"
+    last_validated: "2026-03-18T12:30:00Z"
+    related_entries: [2, 5, 15]
+
+  interaction_discovery:
+    id: 15
+    insight: "Optimal LR decreases with model depth, approximately as LR ∝ 1/sqrt(DEPTH). DEPTH=4→LR=0.008, DEPTH=8→LR=0.005, DEPTH=12→LR=0.003."
+    category: hyperparameter
+    tags: ["learning-rate", "depth", "interaction-effect", "scaling-law"]
+    evidence:
+      source_task_ids: [44]
+      experiments_supporting: 9
+      experiments_contradicting: 0
+      key_commits: ["f1d2e3a"]
+      metric_range:
+        metric: "val_bpb"
+        best: 0.987
+        worst: 1.124
+        baseline: null
+    confidence: medium
+    conditions: "Tested DEPTH=[4,8,12] only. Extrapolation to DEPTH>12 unverified."
+    status: active
+    created_at: "2026-03-19T03:20:00Z"
+    related_entries: [1, 2]
+
+  external_knowledge:
+    id: 20
+    insight: "Paper 'Scaling Laws for Warmup' (Smith et al. 2026) claims optimal warmup scales as sqrt(batch_size). Not yet validated locally."
+    category: external
+    tags: ["warmup", "batch-size", "scaling-law", "unvalidated"]
+    evidence:
+      source_task_ids: [43]
+      experiments_supporting: 0
+      experiments_contradicting: 0
+      key_commits: []
+    confidence: low
+    conditions: "From arxiv paper. Tested on different model family. Needs local validation."
+    status: active
+    created_at: "2026-03-18T15:00:00Z"
+    related_entries: [3]
+
+  outdated_knowledge:
+    id: 5
+    insight: "Batch size 32 is optimal for DEPTH=8 model."
+    category: hyperparameter
+    tags: ["batch-size", "depth-8"]
+    evidence:
+      source_task_ids: [10]
+      experiments_supporting: 6
+      experiments_contradicting: 3
+      key_commits: ["b2c3d4e"]
+    confidence: medium
+    conditions: "Original testing used fixed LR. With cosine annealing, batch size 64 may be better."
+    status: questioned
+    superseded_by: null  # Needs re-testing
+    created_at: "2026-03-16T10:00:00Z"
+    last_validated: "2026-03-16T10:00:00Z"
+    related_entries: [1, 15]

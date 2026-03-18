@@ -1,0 +1,413 @@
+# ============================================================================
+# TASK SCHEMA
+# ============================================================================
+# A task is a unit of work on the task board. Tasks are the primary way work
+# flows through the system. The captain creates tasks, triggers create tasks,
+# and the crew itself creates tasks (follow-ups, maintenance, study).
+#
+# IMPLEMENTATION NOTES FOR HAIKU:
+# - Tasks are stored as YAML files in data/tasks/{id}.yaml
+# - Active task also symlinked at data/tasks/ACTIVE -> {id}.yaml
+# - Completed tasks moved to data/tasks/completed/{id}.yaml
+# - Task IDs are monotonically increasing integers (not UUIDs - humans read these)
+# - All timestamps are ISO 8601 UTC
+# ============================================================================
+
+# --- SCHEMA DEFINITION ---
+
+task:
+  # Required fields (must be set at creation)
+  id:
+    type: integer
+    description: "Monotonically increasing task number. Human-readable. #1, #2, #3..."
+    example: 42
+    generated: true  # System assigns this, not the creator
+
+  title:
+    type: string
+    max_length: 120
+    description: "Short human-readable title. Shows on task board and notifications."
+    example: "Sweep learning rates 0.001-0.01 with cosine annealing"
+
+  type:
+    type: enum
+    values:
+      - captain_order    # Human explicitly created this task
+      - triggered        # External trigger (RSS, webhook, schedule) created this
+      - follow_up        # Previous task's results suggested this
+      - maintenance      # System housekeeping (archive, organize, compact)
+      - study            # Self-directed learning and exploration
+    description: |
+      Determines default priority and behavior:
+        captain_order → priority 1-3 (always highest)
+        triggered     → priority 4-5
+        follow_up     → priority 5-6
+        maintenance   → priority 7-8
+        study         → priority 9-10
+
+  # Optional fields (have defaults or are set during lifecycle)
+  description:
+    type: string
+    max_length: 5000
+    default: ""
+    description: |
+      Detailed description of what needs to happen. For captain_order tasks,
+      this is what the captain wrote. For triggered tasks, this includes the
+      trigger context. For follow_up tasks, this explains why the previous
+      task suggested this work.
+    example: |
+      Previous experiment (#38) showed learning rate 0.005 was optimal with
+      fixed schedule. This task explores whether cosine annealing at the same
+      base LR improves convergence. Run 10 experiments varying decay parameters.
+
+  priority:
+    type: integer
+    range: [1, 10]
+    default: "Derived from type (see type field)"
+    description: |
+      1 = highest priority, 10 = lowest.
+      Captain can override any task's priority.
+      The scheduler always picks the lowest-numbered (highest priority) task.
+      Ties broken by creation order (older first).
+
+      Default mapping:
+        captain_order → 2
+        triggered     → 4
+        follow_up     → 5
+        maintenance   → 7
+        study         → 9
+
+      Priority 1 is reserved for captain's URGENT tasks.
+      Priority 10 is reserved for "nice to have" study topics.
+
+  status:
+    type: enum
+    values:
+      - queued      # On the board, waiting to be picked up
+      - active      # Currently being worked on
+      - paused      # Captain said "pause this" — will resume later
+      - completed   # Done. Results available.
+      - failed      # Attempted but could not complete. Error logged.
+      - cancelled   # Captain said "never mind" or superseded by another task
+    default: queued
+    transitions:
+      queued:    [active, cancelled]
+      active:    [completed, failed, paused, cancelled]
+      paused:    [active, cancelled]
+      completed: []  # Terminal state
+      failed:    [queued]  # Can retry by re-queuing
+      cancelled: []  # Terminal state
+
+  source:
+    type: object
+    description: "Where this task came from. Used for tracing and learning."
+    fields:
+      creator:
+        type: enum
+        values: [captain, trigger, crew, system]
+        description: "Who created this task"
+      trigger_id:
+        type: integer
+        nullable: true
+        description: "If creator=trigger, which trigger fired"
+      parent_task_id:
+        type: integer
+        nullable: true
+        description: "If creator=crew (follow_up), which task spawned this"
+      reason:
+        type: string
+        max_length: 500
+        description: "Why this task was created"
+        example: "Experiment #38 showed LR sensitivity; deeper investigation warranted"
+
+  # --- Experiment specification (for tasks that run GPU experiments) ---
+  experiment:
+    type: object
+    nullable: true
+    description: |
+      If this task involves running experiments, this specifies what to do.
+      Not all tasks have experiments (e.g., maintenance tasks may just reorganize files).
+    fields:
+      type:
+        type: enum
+        values:
+          - sweep           # Systematic parameter sweep
+          - ablation        # Remove/modify one thing, measure impact
+          - exploration     # Try something novel, see what happens
+          - replication     # Re-run a previous experiment to verify
+          - benchmark       # Measure baseline performance
+        description: "What kind of experiment"
+
+      parameters:
+        type: object
+        description: |
+          Key-value pairs of what to vary. Keys are parameter names from train.py,
+          values are either single values or lists (for sweeps).
+        example:
+          learning_rate: [0.001, 0.002, 0.005, 0.008, 0.01]
+          warmup_steps: 100
+          weight_decay: 0.01
+
+      num_experiments:
+        type: integer
+        default: 10
+        description: "How many experiments to run for this task"
+
+      time_budget_seconds:
+        type: integer
+        default: 300
+        description: "Wall-clock seconds per experiment (default: 5 minutes)"
+
+      success_metric:
+        type: string
+        default: "val_bpb"
+        description: "Which metric determines success. Lower is better for val_bpb."
+
+      success_threshold:
+        type: float
+        nullable: true
+        description: |
+          If set, task auto-completes when an experiment beats this threshold.
+          Example: 0.99 means "stop when val_bpb < 0.99"
+
+      baseline:
+        type: float
+        nullable: true
+        description: "Current best value for the success metric. Used to measure improvement."
+
+  # --- Hints from captain ---
+  hints:
+    type: list
+    items:
+      type: object
+      fields:
+        text:
+          type: string
+          description: "The hint text"
+          example: "I think weight decay matters more than LR here"
+        added_at:
+          type: datetime
+          description: "When the captain added this hint"
+    default: []
+    description: |
+      Hints are suggestions from the captain, not orders. The crew should
+      consider hints when planning experiments but is not obligated to follow
+      them exactly. Hints influence the crew's judgment, they don't replace it.
+
+  # --- Crew notes ---
+  notes:
+    type: list
+    items:
+      type: object
+      fields:
+        text:
+          type: string
+          description: "Crew's observation or note"
+          example: "LR 0.008 showed promising loss curve but final val_bpb was worse. Possible overfitting."
+        added_at:
+          type: datetime
+    default: []
+    description: |
+      The crew writes notes as it works. These are observations, hypotheses,
+      and reasoning. They help the captain understand what the crew is thinking
+      and help the crew remember its own reasoning across task boundaries.
+
+  # --- Results ---
+  results:
+    type: object
+    nullable: true
+    description: "Populated when task completes"
+    fields:
+      summary:
+        type: string
+        description: "One-paragraph summary of what was found"
+        example: "Cosine annealing with base LR 0.005 improved val_bpb by 1.2% over fixed schedule. Best config: decay_steps=4000, min_lr=0.0001."
+
+      experiments_run:
+        type: integer
+        description: "How many experiments were actually executed"
+
+      best_experiment:
+        type: object
+        nullable: true
+        fields:
+          commit_hash:
+            type: string
+            description: "Git commit of the best-performing experiment"
+          metric_value:
+            type: float
+            description: "Best value of the success metric"
+          parameters:
+            type: object
+            description: "The parameters that produced this result"
+
+      improvement_pct:
+        type: float
+        nullable: true
+        description: "Percentage improvement over baseline (if baseline was set)"
+
+      findings:
+        type: list
+        items:
+          type: string
+        description: |
+          Notable findings. These get surfaced in notifications and the
+          crew's knowledge base.
+        example:
+          - "Cosine annealing consistently outperforms fixed LR by 0.8-1.5%"
+          - "Below min_lr=0.00005, annealing provides no benefit"
+          - "Interaction with weight decay: higher WD benefits more from annealing"
+
+      suggested_follow_ups:
+        type: list
+        items:
+          type: object
+          fields:
+            title:
+              type: string
+            reason:
+              type: string
+            priority:
+              type: integer
+        description: |
+          Tasks the crew thinks should be done next based on results.
+          The crew auto-creates follow_up tasks from this list (unless
+          captain has disabled auto-follow-ups in config).
+        example:
+          - title: "Test cyclic LR with warm restarts"
+            reason: "Cosine decay worked well; cyclic might find even better minima"
+            priority: 5
+
+  # --- Lifecycle timestamps ---
+  created_at:
+    type: datetime
+    generated: true
+
+  started_at:
+    type: datetime
+    nullable: true
+
+  paused_at:
+    type: datetime
+    nullable: true
+
+  completed_at:
+    type: datetime
+    nullable: true
+
+  # --- Resource tracking ---
+  gpu_seconds_used:
+    type: float
+    default: 0
+    description: "Total GPU-seconds consumed by this task"
+
+  api_tokens_used:
+    type: integer
+    default: 0
+    description: "Total LLM API tokens consumed (for crew reasoning)"
+
+  # --- Tags ---
+  tags:
+    type: list
+    items:
+      type: string
+    default: []
+    description: |
+      Free-form tags for categorization. Used by the crew to find related
+      tasks and by the captain to filter the task board.
+    example: ["learning-rate", "cosine-annealing", "hyperparameter"]
+
+# --- EXAMPLE TASK INSTANCES ---
+
+examples:
+  captain_order:
+    id: 42
+    title: "Sweep learning rates 0.001-0.01 with cosine annealing"
+    type: captain_order
+    priority: 2
+    status: active
+    description: "I read the Chinchilla paper and think we should try cosine annealing with our current setup."
+    source:
+      creator: captain
+      trigger_id: null
+      parent_task_id: null
+      reason: "Captain's research interest"
+    experiment:
+      type: sweep
+      parameters:
+        learning_rate: [0.001, 0.002, 0.003, 0.005, 0.008, 0.01]
+        lr_schedule: "cosine"
+        warmup_steps: 100
+      num_experiments: 6
+      time_budget_seconds: 300
+      success_metric: val_bpb
+      baseline: 1.018
+    hints:
+      - text: "Start with the middle values, they're more likely to work"
+        added_at: "2026-03-18T10:30:00Z"
+    notes:
+      - text: "Starting with LR=0.005 per captain's hint. First 3 experiments complete."
+        added_at: "2026-03-18T10:45:00Z"
+    results: null  # Not yet completed
+    created_at: "2026-03-18T10:00:00Z"
+    started_at: "2026-03-18T10:35:00Z"
+    gpu_seconds_used: 1423.5
+    tags: ["learning-rate", "cosine-annealing"]
+
+  triggered_task:
+    id: 43
+    title: "Review: 'Scaling Laws for Warmup' (arxiv 2603.12345)"
+    type: triggered
+    priority: 4
+    status: queued
+    description: |
+      Trigger 'arxiv-ml' detected relevant paper:
+      "Scaling Laws for Warmup Duration in Large Language Models"
+      Authors: Smith et al., 2026
+      Abstract: We find that optimal warmup duration scales as sqrt(batch_size)...
+
+      Assess relevance to current warmup_steps=100 setting.
+      If findings are actionable, create follow-up experiment task.
+    source:
+      creator: trigger
+      trigger_id: 7
+      parent_task_id: null
+      reason: "arxiv RSS matched filter: 'warmup|learning rate schedule'"
+    experiment: null  # Review task, not experiment
+    hints: []
+    notes: []
+    results: null
+    created_at: "2026-03-18T14:22:00Z"
+    tags: ["paper-review", "warmup", "arxiv"]
+
+  study_task:
+    id: 44
+    title: "Explore: does DEPTH interact with optimal LR?"
+    type: study
+    priority: 9
+    status: queued
+    description: |
+      Self-generated study topic. Historical experiments show LR=0.005 optimal
+      for DEPTH=8. But tasks #12, #28, #35 all used DEPTH=8. No data on whether
+      optimal LR changes with depth. This seems important for future architecture work.
+
+      Plan: Run 3x3 grid (DEPTH=[4,8,12] x LR=[0.003,0.005,0.008]) = 9 experiments.
+    source:
+      creator: crew
+      trigger_id: null
+      parent_task_id: null
+      reason: "Knowledge gap identified in experiment history analysis"
+    experiment:
+      type: exploration
+      parameters:
+        DEPTH: [4, 8, 12]
+        learning_rate: [0.003, 0.005, 0.008]
+      num_experiments: 9
+      time_budget_seconds: 300
+      success_metric: val_bpb
+      baseline: null  # Exploratory, no baseline
+    hints: []
+    notes: []
+    results: null
+    created_at: "2026-03-18T16:00:00Z"
+    tags: ["depth", "learning-rate", "interaction-effects", "self-study"]
