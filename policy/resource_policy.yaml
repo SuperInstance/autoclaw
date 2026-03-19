@@ -1,0 +1,180 @@
+# AutoClaw Resource Policy
+
+Enforce these constraints to prevent runaway costs, OOM failures, and API overages.
+
+```yaml
+version: "1.0"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Memory & CPU
+# ─────────────────────────────────────────────────────────────────────────────
+
+memory:
+  per_agent_mb: 512           # Kill agent if it exceeds this
+  daemon_max_mb: 2048         # Total daemon process cap
+  knowledge_store_max_mb: 1024 # Hot tier size
+
+cpu:
+  agent_pool_max: 32          # Max concurrent agents
+  single_mode_agents: 1       # Single-agent mode (default)
+  swarm_mode_agents: 4        # Default swarm size (override with --agents)
+
+disk:
+  minimum_free_gb: 1.0        # Stop tasks if below this
+  knowledge_cold_tier_gb: 10.0 # Max cold storage before deletion
+  log_rotation_days: 30        # Delete logs older than this
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GPU / vLLM (if CudaClaw installed)
+# ─────────────────────────────────────────────────────────────────────────────
+
+gpu:
+  vram_per_model_gb: 16.0     # Max VRAM per vLLM instance
+  max_concurrent_models: 2    # Prevent OOM from model switching
+  auto_fallback_to_cloud: true # Switch to cloud API if CUDA error
+
+# ─────────────────────────────────────────────────────────────────────────────
+# API Rate Limiting
+# ─────────────────────────────────────────────────────────────────────────────
+
+api:
+  anthropic:
+    requests_per_minute: 10
+    tokens_per_minute: 40000
+    daily_cost_limit_usd: 100.0
+
+  openai:
+    requests_per_minute: 10
+    tokens_per_minute: 90000
+    daily_cost_limit_usd: 50.0
+
+  groq:
+    requests_per_minute: 30
+    tokens_per_minute: 500000
+    daily_cost_limit_usd: 0.0  # free tier
+
+  cloudflare:
+    daily_usage_percent_threshold: 70  # Begin throttling at 70%
+    auto_burn_at_percent: 85           # Spend remaining credits at 85%
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Knowledge Store
+# ─────────────────────────────────────────────────────────────────────────────
+
+knowledge:
+  hot_tier_entries: 1000
+  warm_tier_entries: 100000
+  hot_expiry_hours: 24
+  warm_expiry_days: 30
+  cold_expiry_days: 180
+  gc_interval_seconds: 3600   # Run garbage collection every hour
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Task Board & Scheduling
+# ─────────────────────────────────────────────────────────────────────────────
+
+scheduling:
+  max_pending_tasks: 1000
+  task_timeout_seconds: 3600
+  retry_max_attempts: 3
+  retry_backoff_seconds: [2, 4, 8]
+  gc_completed_tasks_after_days: 7
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Monitoring & Alerts
+# ─────────────────────────────────────────────────────────────────────────────
+
+monitoring:
+  health_check_interval_seconds: 30
+  alert_on_memory_percent: 85
+  alert_on_disk_percent: 90
+  alert_on_api_rate_limit: true
+  log_level: INFO  # DEBUG, INFO, WARNING, ERROR
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OpenClaw Integration
+# ─────────────────────────────────────────────────────────────────────────────
+
+openclaw:
+  enforce_resource_checks: true  # Block tasks that would exceed limits
+  warn_before_exceeding_percent: 70
+  max_parallel_tasks: 4          # Max tasks OpenClaw can submit simultaneously
+  task_queue_max: 100
+```
+
+---
+
+## How OpenClaw Should Use These Limits
+
+### Before Submitting a Task
+
+```python
+import yaml
+
+policy = yaml.safe_load(open("policy/resource_policy.yaml"))
+
+# Check if we have room
+if get_current_agents() >= policy["cpu"]["agent_pool_max"]:
+    warn("Agent pool at capacity. Wait or drop lower-priority tasks.")
+
+if get_free_memory_mb() < policy["memory"]["per_agent_mb"]:
+    raise RuntimeError("Insufficient memory for new agent.")
+
+if get_free_disk_gb() < policy["disk"]["minimum_free_gb"]:
+    raise RuntimeError("Disk space critical. Run garbage collection.")
+```
+
+### During Task Execution
+
+```bash
+# Monitor health continuously
+crew health --watch --interval 30s
+
+# Trigger garbage collection if approaching limits
+crew knowledge gc --aggressive  # Moves hot → warm → cold
+
+# Check API rate limits
+crew cf status
+```
+
+### If Limits Are Exceeded
+
+1. **Memory**: Agent is killed, task reassigned
+2. **Disk**: New tasks paused, automatic GC triggered
+3. **API rate**: Request is queued and retried with exponential backoff
+4. **Cloudflare**: Credit-gaming logic kicks in (batch work, use free APIs)
+
+---
+
+## Customizing Limits
+
+Edit this file directly:
+
+```bash
+# Increase agent pool for a one-time big job
+sed -i 's/agent_pool_max: 32/agent_pool_max: 64/' policy/resource_policy.yaml
+crew start --swarm --agents 8
+
+# Restore after done
+git checkout policy/resource_policy.yaml
+```
+
+Or create a `.local.yaml` override:
+
+```yaml
+# policy/resource_policy.local.yaml
+cpu:
+  agent_pool_max: 8
+knowledge:
+  hot_tier_entries: 500  # Tighter memory budget
+```
+
+Then load it:
+```bash
+export AUTOCLAW_POLICY_OVERRIDE=policy/resource_policy.local.yaml
+crew health
+```
+
+---
+
+**These constraints exist to prevent surprises: no runaway costs, no OOM crashes, no lost work.**
