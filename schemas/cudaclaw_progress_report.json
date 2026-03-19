@@ -1,0 +1,101 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "cudaclaw_progress_report",
+  "title": "CudaClaw Foreman Progress Report",
+  "description": "JSON structure emitted by the Foreman to OpenClaw for progress updates and task completion signalling.",
+  "type": "object",
+  "required": ["swarm_id", "task_id", "status", "progress_pct", "timestamp"],
+
+  "properties": {
+    "swarm_id":      { "type": "string" },
+    "task_id":       { "type": "string" },
+    "report_seq":    { "type": "integer", "description": "Monotonically increasing report number" },
+    "timestamp":     { "type": "string", "format": "date-time" },
+
+    "status": {
+      "type": "string",
+      "enum": ["initializing", "running", "stalled", "loop_detected", "complete", "error", "releasing"],
+      "description": "Overall swarm task status"
+    },
+
+    "progress_pct": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100,
+      "description": "Overall task completion percentage (0-100)"
+    },
+
+    "message": {
+      "type": "string",
+      "description": "Human-readable status update for the user (via OpenClaw)"
+    },
+
+    "completed_subtasks": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/subtask_summary" }
+    },
+
+    "pending_subtasks": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/subtask_summary" }
+    },
+
+    "worker_states": {
+      "type": "object",
+      "description": "Map of instance_id → worker status",
+      "additionalProperties": { "$ref": "#/definitions/worker_state" }
+    },
+
+    "loop_detection": {
+      "type": "object",
+      "properties": {
+        "loops_detected":    { "type": "integer" },
+        "workers_killed":    { "type": "array", "items": { "type": "string" } },
+        "recursion_depths":  { "type": "object", "additionalProperties": { "type": "integer" } }
+      }
+    },
+
+    "resources": {
+      "type": "object",
+      "properties": {
+        "released":       { "type": "boolean" },
+        "release_time":   { "type": "string", "format": "date-time" },
+        "vllm_ports_freed": { "type": "array", "items": { "type": "integer" } }
+      }
+    },
+
+    "result": {
+      "type": "object",
+      "description": "Final task result when status=complete",
+      "properties": {
+        "summary":       { "type": "string" },
+        "output_paths":  { "type": "array", "items": { "type": "string" } },
+        "knowledge_ids": { "type": "array", "items": { "type": "string" } },
+        "confidence":    { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    }
+  },
+
+  "definitions": {
+    "subtask_summary": {
+      "type": "object",
+      "properties": {
+        "id":          { "type": "string" },
+        "description": { "type": "string" },
+        "assigned_to": { "type": "string" },
+        "status":      { "type": "string" },
+        "result_preview": { "type": "string" }
+      }
+    },
+    "worker_state": {
+      "type": "object",
+      "properties": {
+        "role":              { "type": "string" },
+        "status":            { "type": "string", "enum": ["idle", "working", "stalled", "error", "released"] },
+        "current_task_id":   { "type": ["string", "null"] },
+        "tasks_completed":   { "type": "integer" },
+        "iteration_count":   { "type": "integer" }
+      }
+    }
+  }
+}

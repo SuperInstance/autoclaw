@@ -1,0 +1,153 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "cudaclaw_swarm",
+  "title": "CudaClaw Swarm Configuration Schema",
+  "description": "Defines a complete CudaClaw GPU-accelerated swarm – instances, roles, backends, loop detection, and OpenClaw integration hooks.",
+  "version": "1.0.0",
+  "type": "object",
+  "required": ["version", "swarm_name", "instances", "foreman"],
+  "additionalProperties": false,
+
+  "properties": {
+    "version":    { "type": "string", "description": "CudaClaw schema version" },
+    "swarm_name": { "type": "string", "description": "Human-readable swarm identifier" },
+    "task_id":    { "type": "string", "description": "Optional task/job ID assigned by OpenClaw" },
+
+    "instances": {
+      "type": "array",
+      "description": "All agent instances in this swarm.",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/instance" }
+    },
+
+    "foreman": {
+      "type": "object",
+      "description": "Foreman reference and reporting configuration.",
+      "required": ["instance_id", "model"],
+      "properties": {
+        "instance_id":          { "type": "string" },
+        "model":                { "type": "string" },
+        "report_to_openclaw":   { "type": "boolean", "default": true },
+        "report_interval_sec":  { "type": "integer", "default": 30 },
+        "openclaw_callback":    {
+          "type": "string",
+          "description": "Optional HTTP URL for OpenClaw progress callback endpoint"
+        }
+      }
+    },
+
+    "loop_detection": {
+      "type": "object",
+      "description": "Guard rails against infinite loops and runaway recursion.",
+      "properties": {
+        "enabled":                    { "type": "boolean", "default": true },
+        "max_iterations_per_task":    { "type": "integer", "default": 50 },
+        "stall_timeout_seconds":      { "type": "integer", "default": 300 },
+        "recursion_depth_limit":      { "type": "integer", "default": 10 },
+        "duplicate_output_threshold": { "type": "number",  "default": 0.95,
+          "description": "Similarity ratio above which output is considered a duplicate/loop" }
+      }
+    },
+
+    "progress_reporting": {
+      "type": "object",
+      "properties": {
+        "interval_seconds":    { "type": "integer", "default": 30 },
+        "openclaw_callback":   { "type": "boolean", "default": true },
+        "stdout_json":         { "type": "boolean", "default": true,
+          "description": "Emit progress as JSON lines on stdout for OpenClaw to parse" }
+      }
+    },
+
+    "resource_management": {
+      "type": "object",
+      "properties": {
+        "auto_release_on_completion": { "type": "boolean", "default": true },
+        "idle_shutdown_seconds":      { "type": "integer", "default": 120 },
+        "kill_on_loop_detection":     { "type": "boolean", "default": true }
+      }
+    },
+
+    "vllm_config": {
+      "type": "object",
+      "description": "Shared vLLM server settings for GPU-backed instances.",
+      "properties": {
+        "base_port":        { "type": "integer", "default": 8000 },
+        "host":             { "type": "string",  "default": "0.0.0.0" },
+        "dtype":            { "type": "string",  "default": "auto",
+          "enum": ["auto", "float16", "bfloat16", "float32"] },
+        "max_model_len":    { "type": "integer", "default": 8192 },
+        "gpu_memory_utilization": { "type": "number", "default": 0.85 },
+        "tensor_parallel_size":   { "type": "integer", "default": 1 }
+      }
+    }
+  },
+
+  "definitions": {
+    "instance": {
+      "type": "object",
+      "required": ["id", "role", "backend", "model"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique instance identifier within this swarm"
+        },
+        "role": {
+          "type": "string",
+          "description": "Agent role determining behaviour and task subscription.",
+          "enum": [
+            "foreman",
+            "completion_tester",
+            "researcher",
+            "coder",
+            "synthesizer",
+            "validator",
+            "worker"
+          ]
+        },
+        "backend": {
+          "type": "string",
+          "enum": ["vllm", "cloud"],
+          "description": "Inference backend: vllm = local GPU, cloud = remote API"
+        },
+        "model": {
+          "type": "string",
+          "description": "Model ID. For vLLM: HuggingFace model ID. For cloud: provider model name."
+        },
+        "api_provider": {
+          "type": ["string", "null"],
+          "description": "Cloud API provider key (matches api_keys.json). Null for vLLM.",
+          "enum": ["anthropic", "openai", "groq", "together", "mistral", "cohere", "cloudflare", "custom", null]
+        },
+        "vllm_endpoint": {
+          "type": ["string", "null"],
+          "description": "vLLM OpenAI-compatible endpoint URL. Null for cloud.",
+          "examples": ["http://localhost:8000/v1"]
+        },
+        "capabilities": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "List of capability tags used by foreman for task routing."
+        },
+        "max_concurrent_tasks": {
+          "type": "integer",
+          "default": 4,
+          "description": "Max parallel tasks this instance handles simultaneously."
+        },
+        "priority": {
+          "type": "integer",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 10,
+          "description": "Task routing priority (10 = highest)."
+        },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Arbitrary tags for filtering/grouping instances."
+        }
+      }
+    }
+  }
+}

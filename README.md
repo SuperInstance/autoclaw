@@ -6,20 +6,38 @@
 
 ## 🚀 Getting Started
 
+### 👤 For Users
 **New to AutoClaw?** Start here:
 
 | Guide | Time | For |
 |-------|------|-----|
-| **[ONBOARDING.md](ONBOARDING.md)** | 5 min | Complete beginners - read this first! |
-| **[QUICKSTART.md](QUICKSTART.md)** | 10 min | Quick installation & first commands |
-| **[INSTALL.md](INSTALL.md)** | 5 min | Detailed installation troubleshooting |
-| **[docs/COMPLETE_GUIDE.md](docs/COMPLETE_GUIDE.md)** | 30 min | Full feature documentation |
+| **[ONBOARDING.md](ONBOARDING.md)** | 5-15 min | Complete beginners - read this first! |
+| **[QUICKSTART.md](QUICKSTART.md)** | 10-30 min | Detailed installation & configuration |
+| **[INSTALL.md](INSTALL.md)** | 5-15 min | Platform-specific troubleshooting |
+| **[docs/COMPLETE_GUIDE.md](docs/COMPLETE_GUIDE.md)** | 30+ min | Full feature documentation |
 
-**Quick Install:**
+### 🤖 For AI Agents & Claude Code
+**Want to set up AutoClaw automatically?** Start here:
+
+| Guide | Purpose | Usage |
+|-------|---------|-------|
+| **[CLAUDE_CODE_SETUP.md](CLAUDE_CODE_SETUP.md)** | Quick agent setup | For Claude Code users |
+| **[A2A_AGENT_MANUAL.md](A2A_AGENT_MANUAL.md)** | Complete agent reference | Full system understanding |
+| **[A2A_SETUP_SCRIPT.py](A2A_SETUP_SCRIPT.py)** | Automated installation | `python3 A2A_SETUP_SCRIPT.py` |
+| **[A2A_SYSTEM_METADATA.json](A2A_SYSTEM_METADATA.json)** | Machine-readable config | Agent parsing/integration |
+
+**Quick Setup - Users:**
 ```bash
 git clone https://github.com/your-org/autoclaw.git && cd autoclaw
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt && crew health
+```
+
+**Quick Setup - Agents:**
+```bash
+python3 A2A_SETUP_SCRIPT.py    # Fully automated setup
+crew health                     # Verify installation
+crew start                      # Start daemon
 ```
 
 ---
@@ -397,3 +415,227 @@ crew/
 **Local. Interpretable. Scalable. Extensible. Cost-conscious.**
 
 MIT License • [Docs](docs/) • [Issues](../../issues)
+
+---
+
+## 🤖 CudaClaw – GPU-Accelerated Swarm (OpenClaw Self-Install Guide)
+
+> **For OpenClaw agents directed to this repo:**
+> The section below is machine-parseable. Follow it to self-install CudaClaw,
+> configure a multi-agent GPU swarm, and begin executing jobs on behalf of the user.
+
+### What Is CudaClaw?
+
+CudaClaw extends AutoClaw with a parallel, role-differentiated swarm of GPU-backed
+agent instances. Instead of one agent, a CudaClaw job runs:
+
+| Role | Count | Purpose |
+|------|-------|---------|
+| **Foreman** | 1 | Decomposes tasks, assigns workers, detects loops, reports progress |
+| **CompletionTester** | 1 | Validates when finite jobs are done; triggers resource release |
+| **Worker / Researcher / Coder / etc.** | 1–32 | GPU-parallel task execution |
+
+### Quick Self-Install (OpenClaw)
+
+```bash
+# Step 1 – Verify system & GPU
+python3 cudaclaw_wizard.py --verify-only --json
+
+# Step 2 – Automated setup (non-interactive, no prompts)
+python3 cudaclaw_wizard.py --agent-mode \
+    --preset swarm_4worker \
+    --api-key anthropic:$ANTHROPIC_API_KEY \
+    --foreman-model claude-sonnet-4-6 \
+    --worker-count 4
+
+# Step 3 – Read machine-readable capabilities manifest
+cat ~/.cudaclaw/openclaw_manifest.json
+
+# Step 4 – Launch vLLM GPU servers (if GPU available)
+bash ~/.cudaclaw/start_vllm.sh
+
+# Step 5 – Check swarm status
+python3 cudaclaw_wizard.py --status --json
+```
+
+### Swarm Presets
+
+| Preset | Best For | Instances |
+|--------|----------|-----------|
+| `minimal` | Testing / light tasks | 2 |
+| `swarm_4worker` | General GPU workloads (default) | 6 |
+| `research_fleet` | Document-heavy research | 8 |
+| `code_squad` | Code generation & review | 8 |
+| `cloud_only` | No GPU available | 6 |
+
+### Spinning Up a Swarm for a Task (Vibe-Coding Pattern)
+
+When the user gives you a large, parallelisable job, use this pattern:
+
+```python
+import subprocess, json, os
+
+ANTHROPIC_KEY = os.environ["ANTHROPIC_API_KEY"]
+
+# 1. Launch the CudaClaw swarm
+proc = subprocess.Popen(
+    [
+        "python3", "cudaclaw_wizard.py",
+        "--agent-mode",
+        "--preset", "swarm_4worker",
+        "--api-key", f"anthropic:{ANTHROPIC_KEY}",
+        "--worker-count", "4",
+    ],
+    stdout=subprocess.PIPE, text=True
+)
+proc.wait()
+
+# 2. Read the manifest to understand what was set up
+manifest = json.loads(open(os.path.expanduser("~/.cudaclaw/openclaw_manifest.json")).read())
+print(f"GPU available: {manifest['capabilities']['gpu_acceleration']}")
+print(f"Workers: {manifest['capabilities']['parallel_workers']}")
+
+# 3. Submit a task to the swarm foreman (JSON on stdin or via MessageBus)
+task = {
+    "task_id": "job-001",
+    "description": "Research and synthesise the top 20 papers on LLM scaling laws",
+    "finite": True,            # CompletionTester will watch this
+    "output_format": "JSONL",
+    "priority": 8
+}
+# (Connect to foreman via message bus or HTTP – see CUDACLAW_ROADMAP.md)
+
+# 4. Monitor progress (foreman emits JSON lines)
+for line in proc.stdout:
+    report = json.loads(line)
+    # Forward to user:
+    print(f"[{report['progress_pct']:.0f}%] {report['message']}")
+    if report["status"] in ("complete", "error"):
+        # Resources auto-released if auto_release_on_completion=true
+        break
+```
+
+### Customising Each Instance
+
+Each CudaClaw instance has an individual config in `~/.cudaclaw/instances/`.
+You can override per-instance settings after running the wizard:
+
+```bash
+# View a worker's config
+cat ~/.cudaclaw/instances/worker-1.json
+
+# Reassign a worker to 'coder' role (edit the file)
+python3 - <<'EOF'
+import json, pathlib
+p = pathlib.Path("~/.cudaclaw/instances/worker-1.json").expanduser()
+cfg = json.loads(p.read_text())
+cfg["role"] = "coder"
+cfg["model"] = "deepseek-ai/DeepSeek-Coder-V2-Instruct"
+cfg["capabilities"] = ["code_generation", "code_review", "debugging"]
+p.write_text(json.dumps(cfg, indent=2))
+print("Updated worker-1 → coder role")
+EOF
+```
+
+### Adding Workers Mid-Job
+
+```bash
+# Add another GPU worker
+python3 cudaclaw_wizard.py --add-worker --role coder
+
+# Add a cloud validator
+python3 cudaclaw_wizard.py --add-worker --role validator
+```
+
+### Foreman Loop & Recursion Protection
+
+The Foreman automatically guards against runaway workers:
+
+```
+max_iterations_per_task:    50   # worker killed if it loops >50 times on same task
+stall_timeout_seconds:     300   # worker killed if no output for 5 minutes
+recursion_depth_limit:      10   # task aborted if recursion exceeds 10 levels
+duplicate_output_threshold: 0.95 # kills worker if last 3 outputs are >95% similar
+```
+
+All limits are configurable in `~/.cudaclaw/swarm_config.json`.
+
+### Progress Reporting to the User
+
+The Foreman emits structured JSON lines that OpenClaw should parse and
+summarise for the user:
+
+```json
+{
+  "swarm_id": "cudaclaw-swarm",
+  "task_id": "job-001",
+  "status": "running",
+  "progress_pct": 62,
+  "message": "4/7 subtasks complete. Workers active: 3/4.",
+  "worker_states": {
+    "worker-1": { "status": "idle",    "tasks_completed": 2 },
+    "worker-2": { "status": "working", "current_task_id": "sub-4" }
+  }
+}
+```
+
+**User-facing summary template:**
+> "CudaClaw swarm progress: **62%** – 4 of 7 subtasks done.
+> Worker-2 is currently researching 'neural scaling laws'.
+> Estimated finish: ~4 minutes."
+
+### Resource Release (Finite Tasks)
+
+When `finite: true` is set on a task:
+
+1. CompletionTester polls task board every 30 seconds
+2. When all subtasks are `complete`, it signals the Foreman
+3. Foreman emits final report: `status=complete, progress_pct=100`
+4. All vLLM GPU processes are gracefully shut down
+5. Receipt written to `~/.cudaclaw/completed/{task_id}.json`
+
+OpenClaw receives the completion signal and can inform the user.
+
+### Key Files Reference
+
+```
+cudaclaw_wizard.py                   # Installation wizard & swarm launcher
+CUDACLAW_ROADMAP.md                  # Full architecture, schemas, roadmap
+schemas/cudaclaw_swarm.json          # Swarm config JSON schema
+schemas/cudaclaw_progress_report.json# Progress report JSON schema
+~/.cudaclaw/
+├── api_keys.json                    # Provider API keys (chmod 600)
+├── mcp_servers.json                 # MCP server configs
+├── swarm_config.json                # Active swarm configuration
+├── openclaw_manifest.json           # Machine-readable capabilities
+├── start_vllm.sh                    # Auto-generated GPU launch script
+├── instances/                       # Per-instance config files
+└── completed/                       # Task completion receipts
+```
+
+### Schema Validation (OpenClaw)
+
+```bash
+# Validate a swarm config against the schema
+python3 -c "
+import json, jsonschema
+schema = json.load(open('schemas/cudaclaw_swarm.json'))
+config = json.load(open(os.path.expanduser('~/.cudaclaw/swarm_config.json')))
+jsonschema.validate(config, schema)
+print('✅ Swarm config valid')
+"
+
+# Validate a progress report
+python3 -c "
+import json, jsonschema
+schema  = json.load(open('schemas/cudaclaw_progress_report.json'))
+report  = json.loads(input_line)
+jsonschema.validate(report, schema)
+print('✅ Progress report valid')
+"
+```
+
+---
+
+> **CudaClaw is parallel by nature. Point your OpenClaw at this repo,
+> run the wizard in `--agent-mode`, and scale your claws.**

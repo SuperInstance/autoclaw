@@ -31,10 +31,19 @@ class StringValidator:
 
     MAX_LENGTH = 10000
     FORBIDDEN_PATTERNS = [
-        r"<script[^>]*>.*?</script>",  # XSS
-        r"--\s*;",  # SQL comment
-        r";\s*DROP\s+TABLE",  # SQL drop
-        r";\s*DELETE\s+FROM",  # SQL delete
+        # XSS patterns
+        r"<script[^>]*>.*?</script>",  # Script tags
+        r"javascript:",  # JavaScript protocol
+        r"on\w+\s*=",  # Event handlers (onclick, etc)
+        r"<iframe",  # Iframe tags
+        r"<object",  # Object tags
+        # SQL injection patterns
+        r"'\s*;\s*DROP\s+",  # DROP statement
+        r"'\s*OR\s+'?\d*'?\s*=\s*'",  # OR 1=1 type
+        r"'\s*OR\s+1\s*=\s*1",  # OR 1=1
+        r"--\s*$",  # SQL comment at end of line
+        r";\s*DROP",  # DROP after semicolon
+        r"UNION\s+SELECT",  # UNION based injection
     ]
 
     @staticmethod
