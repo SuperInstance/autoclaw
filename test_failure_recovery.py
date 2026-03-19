@@ -74,7 +74,7 @@ def test_missing_config_file():
         test.details = f"Unexpected error: {e}"
 
     test.report()
-    return test.passed
+    assert test.passed, test.details
 
 
 def test_invalid_config_yaml():
@@ -108,7 +108,7 @@ def test_invalid_config_yaml():
         test.details = f"Unexpected error: {e}"
 
     test.report()
-    return test.passed
+    assert test.passed, test.details
 
 
 def test_missing_required_config():
@@ -145,7 +145,7 @@ def test_missing_required_config():
         test.details = f"Unexpected error: {e}"
 
     test.report()
-    return test.passed
+    assert test.passed, test.details
 
 
 # ============================================================================
@@ -182,7 +182,7 @@ def test_xss_injection():
         test.details = f"Unexpected error: {e}"
 
     test.report()
-    return test.passed
+    assert test.passed, test.details
 
 
 def test_sql_injection():
@@ -215,7 +215,7 @@ def test_sql_injection():
         test.details = f"Unexpected error: {e}"
 
     test.report()
-    return test.passed
+    assert test.passed, test.details
 
 
 def test_oversized_input():
@@ -239,7 +239,7 @@ def test_oversized_input():
         test.details = f"Unexpected error: {e}"
 
     test.report()
-    return test.passed
+    assert test.passed, test.details
 
 
 # ============================================================================
@@ -266,7 +266,7 @@ def test_database_initialization_failure():
         test.details = f"Error: {e}"
 
     test.report()
-    return test.passed
+    assert test.passed, test.details
 
 
 def test_concurrent_database_access():
@@ -320,7 +320,7 @@ def test_concurrent_database_access():
         test.details = f"Unexpected error: {e}"
 
     test.report()
-    return test.passed
+    assert test.passed, test.details
 
 
 # ============================================================================
@@ -363,7 +363,7 @@ def test_memory_recovery():
         test.details = f"Error: {e}"
 
     test.report()
-    return test.passed
+    assert test.passed, test.details
 
 
 def test_disk_space_handling():
@@ -389,7 +389,7 @@ def test_disk_space_handling():
         test.details = f"Error: {e}"
 
     test.report()
-    return test.passed
+    assert test.passed, test.details
 
 
 # ============================================================================
@@ -425,7 +425,7 @@ def test_error_handling_decorator():
         test.details = f"Error: {e}"
 
     test.report()
-    return test.passed
+    assert test.passed, test.details
 
 
 def test_circuit_breaker():
@@ -453,7 +453,7 @@ def test_circuit_breaker():
         test.details = f"Error: {e}"
 
     test.report()
-    return test.passed
+    assert test.passed, test.details
 
 
 # ============================================================================
@@ -503,7 +503,7 @@ def test_invalid_knowledge_entry():
         test.details = f"Unexpected error: {e}"
 
     test.report()
-    return test.passed
+    assert test.passed, test.details
 
 
 # ============================================================================
