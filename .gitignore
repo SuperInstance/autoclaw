@@ -23,6 +23,7 @@ dev/
 # Results file
 results.tsv
 logs/
+*.log
 
 # Runtime data (task files, knowledge DB, credits, fallback storage)
 data/
