@@ -1,0 +1,7 @@
+[layer]
+name = "automation"
+
+[provides]
+automated_training = "Hands-off training loop: data → train → evaluate → accept/rollback"
+training_orchestration = "Schedule and manage training jobs across GPU resources"
+gpu_management = "Allocate, track, and conserve GPU hours via conservation-law budgets"
