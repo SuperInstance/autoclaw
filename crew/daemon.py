@@ -747,6 +747,51 @@ class CrewDaemon:
         except Exception as e:
             logger.debug(f"CNS pulse error: {e}")
 
+    def _compute_melt_pressure(self, mu: float = 0.01) -> float:
+        """P56 Theorem 2: P_melt = μ · σ · (t - t_v) · γ"""
+        try:
+            gamma = self.telemetry.get("gamma", 0.5)
+            last_val = self.telemetry.get("last_validation")
+            if not last_val:
+                return 0.0
+            now = datetime.now(timezone.utc)
+            tv = datetime.fromisoformat(last_val)
+            dt = max(0.0, (now - tv).total_seconds())
+            sigma = 0.1  # default distribution shift; replace with live metric if available
+            return mu * sigma * dt * gamma
+        except Exception:
+            return 0.0
+
+    def _check_melt_thresholds(self) -> List[str]:
+        """Inline Melt Pressure Monitor logic for daemon self-watch."""
+        alerts = []
+        try:
+            melt_pressure = self._compute_melt_pressure()
+            max_rate = self._compute_crystallization_rate()
+            temp = self.telemetry.get("temperature", 1.0)
+            molt_count = self.telemetry.get("molt_count", 0)
+            last_val = self.telemetry.get("last_validation")
+            stale_s = 0.0
+            if last_val:
+                now = datetime.now(timezone.utc)
+                stale_s = max(0.0, (now - datetime.fromisoformat(last_val)).total_seconds())
+
+            if melt_pressure > max_rate:
+                alerts.append(f"CRITICAL MOLT-1: P_melt={melt_pressure:.4f} > rate={max_rate:.4f} → MOLT")
+            if melt_pressure > 0.8:
+                alerts.append(f"CRITICAL MELT-PRESSURE: {melt_pressure:.4f} → COOL_DOWN")
+            if molt_count >= 4:
+                alerts.append(f"CRITICAL MOLT-CASCADE: count={molt_count} → VALIDATE")
+            if temp > 2.0:
+                alerts.append(f"CRITICAL THERMAL: T={temp:.2f} → THROTTLE")
+            if temp == 0.0 and melt_pressure == 0.0:
+                alerts.append(f"INFO FROZEN: T=0, P_melt=0 → MONITOR")
+            if stale_s > 3600:
+                alerts.append(f"WARNING STALE-KNOWLEDGE: {stale_s:.0f}s since validation → VALIDATE")
+        except Exception as e:
+            logger.debug(f"Heartbeat threshold check error: {e}")
+        return alerts
+
     def _start_heartbeat_thread(self):
         """Start background thread for GPU monitoring + CNS pulse."""
         def heartbeat():
@@ -757,8 +802,10 @@ class CrewDaemon:
 
                     # TODO: Read GPU stats via nvidia-smi
                     # Update self.state["gpu_stats"]
-                    # Check thresholds
-                    pass
+
+                    # Inline melt/thermal threshold watchdog
+                    for alert in self._check_melt_thresholds():
+                        logger.warning(alert)
                 except Exception as e:
                     logger.debug(f"Heartbeat error: {e}")
 
