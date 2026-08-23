@@ -321,6 +321,8 @@ class EmpiricalValidator:
         self.window_size = window_size
         self.divergence_threshold = divergence_threshold
         self.windows: Dict[str, list] = {}  # agent -> [(ts, gamma, predicted_rate)]
+        self._log_path = Path.home() / ".hermes/empirical_divergence_log.jsonl"
+        self._log_path.parent.mkdir(parents=True, exist_ok=True)
 
     def record(self, tq: TelemetryQuantum) -> Optional[Dict]:
         predicted = compute_max_crystallization_rate(
@@ -344,6 +346,18 @@ class EmpiricalValidator:
         divergence = abs(empirical_rate - predicted_latest)
 
         if divergence > self.divergence_threshold:
+            record = {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "agent_id": tq.agent_id,
+                "empirical_rate": empirical_rate,
+                "predicted_rate": predicted_latest,
+                "divergence": divergence,
+            }
+            try:
+                with self._log_path.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps(record) + "\n")
+            except Exception:
+                pass
             return {
                 "level": "WARNING",
                 "rule": "EMPIRICAL-DIVERGENCE",
@@ -360,6 +374,50 @@ class EmpiricalValidator:
 
     def flush(self) -> List[Dict]:
         return [{"agent_id": aid, "window": win} for aid, win in self.windows.items()]
+
+    @classmethod
+    def load_recent_divergences(cls, limit: int = 200) -> List[Dict]:
+        """Return recent divergence events from the JSONL log file."""
+        log_path = getattr(cls(), "_log_path", Path.home() / ".hermes/empirical_divergence_log.jsonl")
+        if not log_path.exists():
+            return []
+        out: List[Dict] = []
+        try:
+            with log_path.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        out.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+        except Exception:
+            pass
+        return out[-limit:]
+
+    @classmethod
+    def summarize_empirical_health(cls) -> Dict[str, Any]:
+        """Summarize fleet empirical health for daemon status exports."""
+        events = cls.load_recent_divergences()
+        if not events:
+            return {
+                "events": 0,
+                "max_divergence": 0.0,
+                "avg_divergence": 0.0,
+                "worst_agent": "",
+                "status": "healthy",
+            }
+        divergences = [e["divergence"] for e in events]
+        worst = max(events, key=lambda e: e["divergence"])
+        avg = sum(divergences) / len(divergences)
+        return {
+            "events": len(events),
+            "max_divergence": max(divergences),
+            "avg_divergence": avg,
+            "worst_agent": worst.get("agent_id", ""),
+            "status": "divergent" if avg > 0.05 else "stable",
+        }
 
 
 def parse_telemetry_from_packet(packet: Dict) -> Optional[TelemetryQuantum]:

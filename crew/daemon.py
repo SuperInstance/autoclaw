@@ -394,6 +394,16 @@ class CrewDaemon:
                     logger.debug(f"Could not clean {f}: {e}")
 
         logger.info("Maintenance completed")
+        # Empirical validation health snapshot
+        try:
+            from scripts.cns_monitor_v3_telemetry import EmpiricalValidator
+            health = EmpiricalValidator.summarize_empirical_health()
+            health_path = Path("data/empirical_health.json")
+            health_path.parent.mkdir(parents=True, exist_ok=True)
+            health_path.write_text(json.dumps(health, indent=2), encoding="utf-8")
+            logger.info(f"Empirical health snapshot: status={health.get('status')} events={health.get('events')}")
+        except Exception as e:
+            logger.debug(f"Empirical health snapshot failed: {e}")
         self.set_mode("idle")
 
     def run_study_session(self):
