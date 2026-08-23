@@ -601,9 +601,59 @@ class CrewDaemon:
         except Exception:
             return 0.0
 
+    def _validate_telemetry(self, tel: dict) -> tuple[dict, list[str]]:
+        """Enforce conservation laws at egress. Repair where possible, flag otherwise.
+
+        Returns (repaired_telemetry, errors).
+        """
+        errors: list[str] = []
+        tel = dict(tel)  # shallow copy
+
+        # CONS-1: γ + η + δ = 1.0
+        total = tel.get("gamma", 0.0) + tel.get("eta", 0.0) + tel.get("delta", 0.0)
+        if abs(total - 1.0) > 0.001:
+            errors.append(f"CONS-1 violation: γ+η+δ={total:.4f} (repairing)")
+            if 0.0 <= total <= 2.0:
+                scale = 1.0 / total if total > 0 else 0.0
+                tel["gamma"] = round(tel.get("gamma", 0.0) * scale, 4)
+                tel["eta"] = round(tel.get("eta", 0.0) * scale, 4)
+                tel["delta"] = round(tel.get("delta", 0.0) * scale, 4)
+            else:
+                tel["gamma"] = 0.5
+                tel["eta"] = 0.25
+                tel["delta"] = 0.25
+                errors.append("CONS-1 hard reset to safe defaults")
+
+        # CONS-2: individual bounds
+        for key in ("gamma", "eta", "delta"):
+            val = tel.get(key, 0.0)
+            lo, hi = (0.0, 1.0) if key != "delta" else (0.0, 0.25)
+            if not lo <= val <= hi:
+                errors.append(f"CONS-2: {key}={val} out of [{lo},{hi}] (clamping)")
+                tel[key] = max(lo, min(hi, val))
+
+        # DRM: temperature non-negative
+        if tel.get("temperature", 1.0) < 0.0:
+            errors.append(f"DRM: temperature={tel['temperature']} < 0 (clamping)")
+            tel["temperature"] = 0.0
+
+        # MOLT-4: capability in [0,1]
+        cap = tel.get("capability", 1.0)
+        if not 0.0 <= cap <= 1.0:
+            errors.append(f"MOLT-4: capability={cap} out of [0,1] (clamping)")
+            tel["capability"] = max(0.0, min(1.0, cap))
+
+        return tel, errors
+
     def _emit_cns_pulse(self):
         """Phase 3: Emit γ, η, δ, T, Δ to CNS for fleet-wide tracking."""
         try:
+            # Enforce conservation laws before emission
+            validated_tel, tel_errors = self._validate_telemetry(self.telemetry)
+            if tel_errors:
+                self.telemetry = validated_tel
+                logger.warning(f"CNS pulse telemetry repaired: {tel_errors}")
+
             # Ghost Tile: compute identity commitment if agent config available
             identity_hash = ""
             deterministic = False
@@ -628,31 +678,31 @@ class CrewDaemon:
                         "gamma_eta": {
                             "per_agent": {
                                 "autoclaw": {
-                                    "gamma": self.telemetry["gamma"],
-                                    "eta": self.telemetry["eta"],
-                                    "delta": self.telemetry["delta"],
+                                    "gamma": validated_tel["gamma"],
+                                    "eta": validated_tel["eta"],
+                                    "delta": validated_tel["delta"],
                                 }
                             },
                             "fleet_sum": {
-                                "total_gamma_eta": self.telemetry["gamma"] + self.telemetry["eta"],
-                                "utilization": (self.telemetry["gamma"] + self.telemetry["eta"]) / 4.0,
+                                "total_gamma_eta": validated_tel["gamma"] + validated_tel["eta"],
+                                "utilization": (validated_tel["gamma"] + validated_tel["eta"]) / 4.0,
                             }
                         },
                         "thermal": {
-                            "temperature": self.telemetry["temperature"],
+                            "temperature": validated_tel["temperature"],
                             "temperature_task": 1.0,
-                            "temperature_idle": max(self.telemetry["temperature"], 2.0),
+                            "temperature_idle": max(validated_tel["temperature"], 2.0),
                             "temp_rise_rate": 0.0,
                             "last_temp_change": datetime.now(timezone.utc).isoformat(),
                             "is_dreaming": False,
                         },
                         "creative": {
-                            "semantic_distance": self.telemetry["semantic_distance"],
+                            "semantic_distance": validated_tel["semantic_distance"],
                             "creative_value": 0.5,
                             "kappa_delta": 0.5,
                             "crystallization_rate": self._compute_crystallization_rate(),
-                            "is_in_creative_zone": 0.4 <= self.telemetry["semantic_distance"] <= 0.6,
-                            "is_in_oneiric_zone": 0.6 <= self.telemetry["semantic_distance"] <= 0.8,
+                            "is_in_creative_zone": 0.4 <= validated_tel["semantic_distance"] <= 0.6,
+                            "is_in_oneiric_zone": 0.6 <= validated_tel["semantic_distance"] <= 0.8,
                         },
                         "melt": {
                             "melt_pressure": 0.0,
@@ -666,14 +716,14 @@ class CrewDaemon:
                             "deterministic": deterministic,
                         },
                         "molt": {
-                            "molt_count": self.telemetry["molt_count"],
+                            "molt_count": validated_tel["molt_count"],
                             "max_molt_chain": 5,
-                            "capability": self.telemetry["capability"],
+                            "capability": validated_tel["capability"],
                             "molt_phase": "stable",
                         },
                         "uncertainty": {
                             "tau": 0.5,
-                            "effective_temperature": self.telemetry["temperature"],
+                            "effective_temperature": validated_tel["temperature"],
                             "confidence_zone": "YELLOW",
                             "kl_divergence_from_deterministic": 0.0,
                         },

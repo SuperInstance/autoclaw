@@ -330,11 +330,22 @@ def parse_telemetry_from_packet(packet: Dict) -> Optional[TelemetryQuantum]:
     for agent_id, data in per_agent.items():
         if not isinstance(data, dict):
             continue
+        # Ingress defense: repair out-of-bounds values before constructing quantum
+        gamma = data.get("gamma", 0.5)
+        eta = data.get("eta", 0.1)
+        delta = data.get("delta", 0.2)
+        total = gamma + eta + delta
+        if abs(total - 1.0) > 0.001 and 0.0 <= total <= 2.0:
+            scale = 1.0 / total if total > 0 else 0.0
+            gamma, eta, delta = round(gamma * scale, 4), round(eta * scale, 4), round(delta * scale, 4)
+        gamma = max(0.0, min(1.0, gamma))
+        eta = max(0.0, min(1.0, eta))
+        delta = max(0.0, min(0.25, delta))
         tq = TelemetryQuantum(
             agent_id=agent_id,
-            gamma=data.get("gamma", 0.5),
-            eta=data.get("eta", 0.1),
-            delta=data.get("delta", 0.2),
+            gamma=gamma,
+            eta=eta,
+            delta=delta,
             temperature=payload.get("thermal", {}).get("temperature", 1.0),
             semantic_distance=payload.get("creative", {}).get("semantic_distance", 0.5),
             melt_pressure=payload.get("melt", {}).get("melt_pressure", 0.0),
