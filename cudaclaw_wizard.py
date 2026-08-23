@@ -513,13 +513,24 @@ class VllmSetup:
         for inst in instances:
             if inst.get("backend") == "vllm":
                 lines.append(f"# {inst['id']} ({inst['role']})")
+                # Ghost Tile: propagate deterministic config into vLLM runtime
+                vllm_args = [
+                    f"  --model {inst['model']}",
+                    f"  --port {port}",
+                    f"  --host 0.0.0.0",
+                    f"  --dtype auto",
+                    f"  --max-model-len 8192",
+                ]
+                if inst.get("ghost_tile", {}).get("deterministic", False):
+                    vllm_args.append(f"  --temperature {inst['ghost_tile'].get('temperature', 0.0)}")
+                    seed = inst.get("ghost_tile", {}).get("seed", "")
+                    if seed:
+                        vllm_args.append(f"  --seed {seed}")
                 lines.append(
-                    f"python -m vllm.entrypoints.openai.api_server \\\n"
-                    f"  --model {inst['model']} \\\n"
-                    f"  --port {port} \\\n"
-                    f"  --host 0.0.0.0 \\\n"
-                    f"  --dtype auto \\\n"
-                    f"  --max-model-len 8192 &"
+                    "python -m vllm.entrypoints.openai.api_server \
+" +
+                    "\
+".join(vllm_args) + " &"
                 )
                 lines.append(f"echo 'Started {inst['id']} on port {port}'")
                 lines.append("")
