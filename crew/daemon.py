@@ -627,10 +627,14 @@ class CrewDaemon:
                             "temperature": self.telemetry["temperature"],
                             "temperature_task": 1.0,
                             "temperature_idle": max(self.telemetry["temperature"], 2.0),
+                            "temp_rise_rate": 0.0,
+                            "last_temp_change": datetime.now(timezone.utc).isoformat(),
                             "is_dreaming": False,
                         },
                         "creative": {
                             "semantic_distance": self.telemetry["semantic_distance"],
+                            "creative_value": 0.5,
+                            "kappa_delta": 0.5,
                             "is_in_creative_zone": 0.4 <= self.telemetry["semantic_distance"] <= 0.6,
                             "is_in_oneiric_zone": 0.6 <= self.telemetry["semantic_distance"] <= 0.8,
                         },
@@ -638,6 +642,10 @@ class CrewDaemon:
                             "melt_pressure": 0.0,
                             "max_crystallization_rate": 0.015,
                             "melt_threshold_exceeded": False,
+                            "last_validation": datetime.now(timezone.utc).isoformat(),
+                            "time_since_validation_seconds": 0,
+                            "staleness_factor": 0.0,
+                            "distribution_shift_sigma": 0.0,
                             "identity_hash": identity_hash,
                             "deterministic": deterministic,
                         },
@@ -645,17 +653,25 @@ class CrewDaemon:
                             "molt_count": self.telemetry["molt_count"],
                             "max_molt_chain": 5,
                             "capability": self.telemetry["capability"],
+                            "molt_phase": "stable",
                         },
                         "uncertainty": {
                             "tau": 0.5,
+                            "effective_temperature": self.telemetry["temperature"],
                             "confidence_zone": "YELLOW",
+                            "kl_divergence_from_deterministic": 0.0,
+                        },
+                        "anomaly": {
+                            "delta_spike": 0.0,
+                            "recovery_time_estimate": 0.0,
+                            "anomaly_spectrum_peaks": []
                         }
                     }
                 },
                 "signature": {
                     "type": "USCP-v3",
                     "version": "3.0",
-                    "extensions": ["gamma_eta", "thermal", "creative", "melt", "molt", "uncertainty"]
+                    "extensions": ["gamma_eta", "thermal", "creative", "melt", "molt", "uncertainty", "anomaly"]
                 }
             }
             fname = f"autoclaw_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json"
