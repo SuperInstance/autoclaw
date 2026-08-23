@@ -64,6 +64,13 @@ RULES = {
         "description": "GT1 ∘ (GT2 ∘ GT3) == (GT1 ∘ GT2) ∘ GT3 (composition algebra)",
         "check": lambda d: len(d.get("equipment", [])) < 2 or d.get("composition_tested", False) is True
     },
+    "G5-EMPIRICAL": {
+        "description": "empirical_windows structure valid for divergence tracking",
+        "check": lambda d: isinstance(d.get("empirical_windows"), list) and all(
+            isinstance(w, dict) and "agent_id" in w and "window" in w
+            for w in d.get("empirical_windows", [])
+        )
+    },
 }
 
 def evaluate(data: Dict) -> Tuple[bool, List[Dict]]:
