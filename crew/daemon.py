@@ -182,6 +182,7 @@ class CrewDaemon:
         # Start background threads
         self._start_heartbeat_thread()
         self._start_command_listener_thread()
+        self._start_melt_pressure_monitor_thread()
         self.integration.start_background_services()  # Start triggers, etc
 
         logger.info("Crew daemon running. Mode: working")
@@ -848,6 +849,28 @@ class CrewDaemon:
         thread.start()
         self.threads.append(thread)
         logger.debug("Started command listener thread")
+
+    def _start_melt_pressure_monitor_thread(self):
+        """Start background thread for Melt Pressure Monitor."""
+        try:
+            import sys
+            from pathlib import Path
+            scripts_dir = str(Path(__file__).resolve().parent.parent / "scripts")
+            if scripts_dir not in sys.path:
+                sys.path.insert(0, scripts_dir)
+            from melt_pressure_monitor import MeltPressureMonitor
+            monitor = MeltPressureMonitor()
+        except Exception as e:
+            logger.warning(f"Cannot load MeltPressureMonitor: {e}")
+            return
+
+        def monitor_loop():
+            monitor.start()
+
+        thread = threading.Thread(target=monitor_loop, daemon=True)
+        thread.start()
+        self.threads.append(thread)
+        logger.debug("Started Melt Pressure Monitor thread")
 
     def _handle_command(self, connection):
         """Handle a CLI command.
