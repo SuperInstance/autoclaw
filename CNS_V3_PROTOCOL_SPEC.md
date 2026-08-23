@@ -349,3 +349,59 @@ It verifies every rule in `scripts/verification_checklist_runner.py` by injectin
 ---
 
 *This document is the v3 protocol contract. If code and doc diverge, the code wins and this doc is patched.*
+
+---
+
+## 12. Runtime Agents
+
+### 12.1 Melt Pressure Monitor
+
+**Location:** `autoclaw/scripts/melt_pressure_monitor.py`  
+**Invocation:** `python3 scripts/melt_pressure_monitor.py` (standalone) or wired into daemon heartbeat  
+**State:** `melt_pressure_state.json` (per-agent rolling windows), `melt_pressure.log`
+
+Polls CNS inbox, builds `AgentHealthWindow` per agent, evaluates 8 rules, emits CNS response packets with recommended actions.
+
+| Rule | Condition | Level | Action |
+|---|---|---|---|
+| MOLT-1 | `P_melt > max_crystallization_rate` | CRITICAL | `MOLT` |
+| MELT-PRESSURE-CRITICAL | `P_melt > 0.8` | CRITICAL | `COOL_DOWN` |
+| MOLT-CASCADE | `molt_count >= 4` | CRITICAL | `VALIDATE` |
+| THERMAL | `T > 2.0` | CRITICAL | `THROTTLE` |
+| FROZEN | `T == 0.0 && P_melt == 0.0` | INFO | `MONITOR` |
+| STALE-KNOWLEDGE | `time_since_validation > 3600s` | WARNING | `VALIDATE` |
+| MELT-TREND | slope > 0.01 | WARNING | `MONITOR` |
+| THERMAL-TREND | slope > 0.05 | WARNING | `MONITOR` |
+
+### 12.2 Empirical Validator
+
+**Location:** embedded in `cns_monitor_v3_telemetry.py::EmpiricalValidator`  
+**Persistence:** `telemetry_state["empirical_windows"]`
+
+Compares measured `dγ/dt` against P56 Theorem 1 prediction. Alert rule: `EMPIRICAL-DIVERGENCE` fires when `divergence > 0.05`.
+
+```
+predicted = α · κ(Δ) · (1 − γ) / (1 + β · T)
+empirical = (γ(t) − γ(t−3Δt)) / (3Δt)
+divergence = |empirical − predicted|
+```
+
+G5-EMPIRICAL checklist rule validates `empirical_windows` structure (list of `{agent_id, window}` dicts).
+
+---
+
+## 13. Maintenance Log
+
+| Date | Change | Commit |
+|---|---|---|
+| 2026-08-22 | CNS v3 spec v1.0 | `autoclaw@609b115` |
+| 2026-08-22 | USCP-v3 parser support | `cns-echo@23308a0` |
+| 2026-08-22 | Melt Pressure Monitor | `autoclaw@1e52b42` |
+| 2026-08-22 | Conservation law hooks | `autoclaw@4e5cbec` |
+| 2026-08-22 | Ghost Tile vLLM wiring | `autoclaw@80edb8d` |
+| 2026-08-22 | Empirical Validator | `autoclaw@3b381ba` |
+| 2026-08-22 | G5-EMPIRICAL rule | `autoclaw@3300f40` |
+
+---
+
+*This document is the v3 protocol contract. If code and doc diverge, the code wins and this doc is patched.*
