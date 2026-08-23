@@ -422,9 +422,20 @@ class SwarmConfigurator:
                     "vllm_endpoint": "http://localhost:8000/v1" if spec["backend"] == "vllm" else None,
                     "capabilities": _role_capabilities(spec["role"]),
                 }
+
+                # Ghost Tile: deterministic identity commitment at swarm level
+                inst["idHash"] = compute_instance_identity_hash(inst)
+                if getattr(self.args, "ghost_tile", False):
+                    inst["ghostTile"] = {
+                        "deterministic": True,
+                        "temperature": 0.0,
+                        "seed": f"ghost-tile-{inst['id']}",
+                    }
+
                 instances.append(inst)
 
         self.config["instances"] = instances
+        self.config["ghost_tile_enabled"] = getattr(self.args, "ghost_tile", False)
         # Extract foreman config
         foreman = next((i for i in instances if i["role"] == "foreman"), None)
         if foreman:
@@ -472,6 +483,23 @@ def _role_capabilities(role: str) -> List[str]:
     return caps.get(role, ["general_tasks"])
 
 
+def compute_instance_identity_hash(inst: Dict) -> str:
+    """G2: Ghost Tile identity commitment for a swarm instance.
+
+    Computes SHA256 over deterministic instance properties:
+      role || model || backend
+
+    This is the P03 Kan extension invariant at the swarm level.
+    """
+    import hashlib
+
+    m = hashlib.sha256()
+    m.update(inst.get("role", "").encode())
+    m.update(inst.get("model", "").encode())
+    m.update(inst.get("backend", "").encode())
+    return f"sha256:{m.hexdigest()[:16]}"
+
+
 # ─────────────────────────────────────────────
 # VLLM SETUP HELPER
 # ─────────────────────────────────────────────
@@ -493,7 +521,7 @@ class VllmSetup:
                     f"  --dtype auto \\\n"
                     f"  --max-model-len 8192 &"
                 )
-                lines.append(f"echo 'Started {inst[\"id\"]} on port {port}'")
+                lines.append(f"echo 'Started {inst['id']} on port {port}'")
                 lines.append("")
                 # Update vllm_endpoint for this instance
                 inst["vllm_endpoint"] = f"http://localhost:{port}/v1"
@@ -521,6 +549,7 @@ def generate_openclaw_manifest(swarm_config: Dict, keys: ApiKeyManager, sysinfo:
         "cudaclaw_version": CUDACLAW_VERSION,
         "manifest_version": "1.0",
         "description": "CudaClaw GPU-accelerated multi-agent swarm for AutoClaw",
+        "ghost_tile": swarm_config.get("ghost_tile_enabled", False),
         "capabilities": {
             "gpu_acceleration": sysinfo["cuda"]["available"],
             "vllm_inference": sysinfo["vllm"],
@@ -779,6 +808,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--stop",           action="store_true", help="Stop running swarm")
     p.add_argument("--add-worker",     action="store_true", help="Add a new worker instance")
     p.add_argument("--role",           default="worker", help="Role for --add-worker")
+    p.add_argument("--ghost-tile",     action="store_true",
+                   help="Enable Ghost Tile mode: T=0, deterministic identity hashes per instance")
     return p
 
 
