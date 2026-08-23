@@ -314,8 +314,55 @@ def compute_capability_after_molt(
     return initial_capability * min(1.0, gamma)
 
 
+class EmpiricalValidator:
+    """Logs empirical dγ/dt vs predicted crystallization rate (P56 Theorem 1)."""
+
+    def __init__(self, window_size: int = 10, divergence_threshold: float = 0.05):
+        self.window_size = window_size
+        self.divergence_threshold = divergence_threshold
+        self.windows: Dict[str, list] = {}  # agent -> [(ts, gamma, predicted_rate)]
+
+    def record(self, tq: TelemetryQuantum) -> Optional[Dict]:
+        predicted = compute_max_crystallization_rate(
+            gamma=tq.gamma,
+            semantic_distance=tq.semantic_distance,
+            temperature=tq.temperature,
+        )
+        win = self.windows.setdefault(tq.agent_id, [])
+        win.append((tq.timestamp or datetime.now(timezone.utc).isoformat(), tq.gamma, predicted))
+        if len(win) > self.window_size:
+            self.windows[tq.agent_id] = win[-self.window_size:]
+
+        if len(win) < 3:
+            return None
+
+        _, g0, _ = win[-3]
+        _, g1, _ = win[-1]
+        dt = 1.0
+        empirical_rate = (g1 - g0) / dt
+        _, _, predicted_latest = win[-1]
+        divergence = abs(empirical_rate - predicted_latest)
+
+        if divergence > self.divergence_threshold:
+            return {
+                "level": "WARNING",
+                "rule": "EMPIRICAL-DIVERGENCE",
+                "agent": tq.agent_id,
+                "message": (
+                    f"dγ/dt={empirical_rate:.4f} vs predicted={predicted_latest:.4f} "
+                    f"(divergence={divergence:.4f})"
+                ),
+                "empirical_rate": empirical_rate,
+                "predicted_rate": predicted_latest,
+                "divergence": divergence,
+            }
+        return None
+
+    def flush(self) -> List[Dict]:
+        return [{"agent_id": aid, "window": win} for aid, win in self.windows.items()]
+
+
 def parse_telemetry_from_packet(packet: Dict) -> Optional[TelemetryQuantum]:
-    """Extract TelemetryQuantum from a CNS packet if present."""
     body = packet.get("body", {})
     payload = body.get("payload", {})
     if not isinstance(payload, dict):
@@ -435,7 +482,7 @@ def quarantine(filepath, reason):
         except:
             pass
 
-def process_packet(filepath, state, telemetry_state):
+def process_packet(filepath, state, telemetry_state, empirical_validator=None):
     """Extended v3 packet processor with telemetry extraction."""
     name = os.path.basename(filepath)
 
@@ -505,6 +552,7 @@ def process_packet(filepath, state, telemetry_state):
                 "violations": violations, "alerts": [a['rule'] for a in alerts]
             }
             telemetry_state["last_fleet_update"] = fleet.last_update
+            telemetry_state["empirical_windows"] = empirical_validator.flush()
             for a in alerts:
                 telemetry_state["alert_counts"][a["level"]] = \
                     telemetry_state.get("alert_counts", {}).get(a["level"], 0) + 1
@@ -604,7 +652,7 @@ def main():
 
             for filename in files:
                 filepath = os.path.join(INBOX_PATH, filename)
-                process_packet(filepath, state, telemetry_state)
+                process_packet(filepath, state, telemetry_state, empirical_validator)
 
             save_state(state)
             save_telemetry_state(telemetry_state)
