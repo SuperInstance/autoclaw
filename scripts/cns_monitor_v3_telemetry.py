@@ -272,6 +272,7 @@ def parse_telemetry_from_packet(packet: Dict) -> Optional[TelemetryQuantum]:
             temperature=payload.get("thermal", {}).get("temperature", 1.0),
             semantic_distance=payload.get("creative", {}).get("semantic_distance", 0.5),
             melt_pressure=payload.get("melt", {}).get("melt_pressure", 0.0),
+            max_crystallization_rate=payload.get("melt", {}).get("max_crystallization_rate", 0.0),
             molt_count=payload.get("molt", {}).get("molt_count", 0),
             capability=payload.get("molt", {}).get("capability", 1.0),
             tau=payload.get("uncertainty", {}).get("tau", 0.5),
@@ -419,7 +420,8 @@ def process_packet(filepath, state, telemetry_state):
                 "timestamp": tq.timestamp,
                 "gamma": tq.gamma, "eta": tq.eta, "delta": tq.delta,
                 "temperature": tq.temperature, "semantic_distance": tq.semantic_distance,
-                "melt_pressure": tq.melt_pressure, "molt_count": tq.molt_count,
+                "melt_pressure": tq.melt_pressure, "max_crystallization_rate": tq.max_crystallization_rate,
+                "molt_count": tq.molt_count,
                 "capability": tq.capability, "tau": tq.tau,
                 "violations": violations, "alerts": [a['rule'] for a in alerts]
             }
