@@ -16,6 +16,7 @@ import socket
 import threading
 import logging
 import shutil
+import json
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional
@@ -153,6 +154,19 @@ class CrewDaemon:
         self.state = self._load_state()
         self.current_task: Optional[Task] = None
         self.mode = "starting"
+
+        # CNS v3 telemetry state (Phase 3 integration)
+        self.telemetry = {
+            "gamma": 0.5,
+            "eta": 0.25,
+            "delta": 0.25,
+            "temperature": 1.0,
+            "semantic_distance": 0.5,
+            "molt_count": 0,
+            "capability": 1.0,
+            "last_validation": datetime.now(timezone.utc).isoformat(),
+        }
+        self.cns_inbox = Path.home() / ".hermes/cns_inbox"
 
         # Signal handlers
         signal.signal(signal.SIGTERM, self._handle_signal)
@@ -551,11 +565,81 @@ class CrewDaemon:
     # Background Threads
     # ========================================================================
 
+    def _emit_cns_pulse(self):
+        """Phase 3: Emit γ, η, δ, T, Δ to CNS for fleet-wide tracking."""
+        try:
+            packet = {
+                "header": {
+                    "origin_id": "autoclaw-daemon",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "priority": "NORMAL",
+                    "destination_id": "hermes-cns",
+                },
+                "body": {
+                    "intent": "CNS_PULSE_STATUS",
+                    "payload": {
+                        "type": "fleet_telemetry",
+                        "gamma_eta": {
+                            "per_agent": {
+                                "autoclaw": {
+                                    "gamma": self.telemetry["gamma"],
+                                    "eta": self.telemetry["eta"],
+                                    "delta": self.telemetry["delta"],
+                                }
+                            },
+                            "fleet_sum": {
+                                "total_gamma_eta": self.telemetry["gamma"] + self.telemetry["eta"],
+                                "utilization": (self.telemetry["gamma"] + self.telemetry["eta"]) / 4.0,
+                            }
+                        },
+                        "thermal": {
+                            "temperature": self.telemetry["temperature"],
+                            "temperature_task": 1.0,
+                            "temperature_idle": max(self.telemetry["temperature"], 2.0),
+                            "is_dreaming": False,
+                        },
+                        "creative": {
+                            "semantic_distance": self.telemetry["semantic_distance"],
+                            "is_in_creative_zone": 0.4 <= self.telemetry["semantic_distance"] <= 0.6,
+                            "is_in_oneiric_zone": 0.6 <= self.telemetry["semantic_distance"] <= 0.8,
+                        },
+                        "melt": {
+                            "melt_pressure": 0.0,
+                            "max_crystallization_rate": 0.015,
+                            "melt_threshold_exceeded": False,
+                        },
+                        "molt": {
+                            "molt_count": self.telemetry["molt_count"],
+                            "max_molt_chain": 5,
+                            "capability": self.telemetry["capability"],
+                        },
+                        "uncertainty": {
+                            "tau": 0.5,
+                            "confidence_zone": "YELLOW",
+                        }
+                    }
+                },
+                "signature": {
+                    "type": "USCP-v3",
+                    "version": "3.0",
+                    "extensions": ["gamma_eta", "thermal", "creative", "melt", "molt", "uncertainty"]
+                }
+            }
+            fname = f"autoclaw_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json"
+            out = self.cns_inbox / fname
+            out.write_text(json.dumps(packet, indent=2))
+            logger.debug(f"CNS pulse emitted → {fname}")
+        except Exception as e:
+            logger.debug(f"CNS pulse error: {e}")
+
     def _start_heartbeat_thread(self):
-        """Start background thread for GPU monitoring."""
+        """Start background thread for GPU monitoring + CNS pulse."""
         def heartbeat():
             while not self.shutdown_requested:
                 try:
+                    # Phase 3: Emit CNS telemetry pulse
+                    self._emit_cns_pulse()
+
                     # TODO: Read GPU stats via nvidia-smi
                     # Update self.state["gpu_stats"]
                     # Check thresholds
