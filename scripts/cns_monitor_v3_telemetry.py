@@ -46,6 +46,7 @@ class TelemetryQuantum:
     semantic_distance: float = 0.5  # Δ ∈ [0,1]
     melt_pressure: float = 0.0
     max_crystallization_rate: float = 0.0
+    deterministic: bool = False  # G1: Ghost Tile determinism gate
     molt_count: int = 0
     capability: float = 1.0  # m(t) ∈ [0,1]
     tau: float = 0.5         # Uncertainty coherence τ ∈ [0,1]
@@ -131,6 +132,14 @@ class FleetTelemetry:
                     "rule": "MOLT-1",
                     "agent": aid,
                     "message": f"P_melt={t.melt_pressure:.6f} > crystallization={t.max_crystallization_rate:.6f}"
+                })
+            # G1: Determinism gate
+            if t.deterministic and t.temperature > 0.0:
+                alerts.append({
+                    "level": "WARNING",
+                    "rule": "G1-DETERMINISM",
+                    "agent": aid,
+                    "message": f"deterministic=true but T={t.temperature:.3f} — must be 0"
                 })
             # Frozen
             if t.is_frozen():
@@ -273,6 +282,7 @@ def parse_telemetry_from_packet(packet: Dict) -> Optional[TelemetryQuantum]:
             semantic_distance=payload.get("creative", {}).get("semantic_distance", 0.5),
             melt_pressure=payload.get("melt", {}).get("melt_pressure", 0.0),
             max_crystallization_rate=payload.get("melt", {}).get("max_crystallization_rate", 0.0),
+            deterministic=payload.get("melt", {}).get("deterministic", False),
             molt_count=payload.get("molt", {}).get("molt_count", 0),
             capability=payload.get("molt", {}).get("capability", 1.0),
             tau=payload.get("uncertainty", {}).get("tau", 0.5),
@@ -421,6 +431,7 @@ def process_packet(filepath, state, telemetry_state):
                 "gamma": tq.gamma, "eta": tq.eta, "delta": tq.delta,
                 "temperature": tq.temperature, "semantic_distance": tq.semantic_distance,
                 "melt_pressure": tq.melt_pressure, "max_crystallization_rate": tq.max_crystallization_rate,
+                "deterministic": tq.deterministic,
                 "molt_count": tq.molt_count,
                 "capability": tq.capability, "tau": tq.tau,
                 "violations": violations, "alerts": [a['rule'] for a in alerts]

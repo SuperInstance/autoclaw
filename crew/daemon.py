@@ -565,9 +565,40 @@ class CrewDaemon:
     # Background Threads
     # ========================================================================
 
+    def compute_identity_hash(self, agent_config: Dict) -> str:
+        """G2: SHA256 commitment over model, seed, shell identity."""
+        import hashlib
+        m = hashlib.sha256()
+        m.update(
+            agent_config.get("shell", {})
+            .get("identityHash", "")
+            .encode()
+        )
+        m.update(
+            agent_config.get("seed", {})
+            .get("purpose", "")
+            .encode()
+        )
+        m.update(
+            agent_config.get("model", {})
+            .get("modelId", "")
+            .encode()
+        )
+        return f"sha256:{m.hexdigest()[:16]}"
+
     def _emit_cns_pulse(self):
         """Phase 3: Emit γ, η, δ, T, Δ to CNS for fleet-wide tracking."""
         try:
+            # Ghost Tile: compute identity commitment if agent config available
+            identity_hash = ""
+            deterministic = False
+            try:
+                agent_config = self.current_task.agent_config if self.current_task else {}
+                identity_hash = self.compute_identity_hash(agent_config)
+                deterministic = agent_config.get("model", {}).get("deterministic", False)
+            except Exception:
+                pass
+
             packet = {
                 "header": {
                     "origin_id": "autoclaw-daemon",
@@ -607,6 +638,8 @@ class CrewDaemon:
                             "melt_pressure": 0.0,
                             "max_crystallization_rate": 0.015,
                             "melt_threshold_exceeded": False,
+                            "identity_hash": identity_hash,
+                            "deterministic": deterministic,
                         },
                         "molt": {
                             "molt_count": self.telemetry["molt_count"],

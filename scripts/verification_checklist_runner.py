@@ -56,6 +56,14 @@ RULES = {
         "description": "Staleness factor computed: (t−tv)·γ",
         "check": lambda d: True  # Placeholder — requires timestamps
     },
+    "G1-DETERMINISM": {
+        "description": "deterministic=true implies T=0",
+        "check": lambda d: not d.get("deterministic", False) or d.get("temperature", 1.0) == 0.0
+    },
+    "G4-COMPOSITION": {
+        "description": "GT1 ∘ (GT2 ∘ GT3) == (GT1 ∘ GT2) ∘ GT3 (composition algebra)",
+        "check": lambda d: len(d.get("equipment", [])) < 2 or d.get("composition_tested", False) is True
+    },
 }
 
 def evaluate(data: Dict) -> Tuple[bool, List[Dict]]:
