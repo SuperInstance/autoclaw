@@ -586,6 +586,21 @@ class CrewDaemon:
         )
         return f"sha256:{m.hexdigest()[:16]}"
 
+    def _compute_crystallization_rate(self) -> float:
+        """P56 Theorem 1: dγ/dt = α · κ(Δ) · (1−γ) · 1/(1+βT)"""
+        try:
+            gamma = float(self.telemetry.get("gamma", 0.5))
+            delta_sem = float(self.telemetry.get("semantic_distance", 0.5))
+            temp = float(self.telemetry.get("temperature", 1.0))
+            alpha = 1.0
+            beta = 0.5
+            sigma_c = 0.1
+            kappa = math.exp(-((delta_sem - 0.5) ** 2) / (2 * sigma_c ** 2))
+            phi = 1.0 / (1.0 + beta * temp)
+            return alpha * kappa * max(0.0, 1.0 - gamma) * phi
+        except Exception:
+            return 0.0
+
     def _emit_cns_pulse(self):
         """Phase 3: Emit γ, η, δ, T, Δ to CNS for fleet-wide tracking."""
         try:
@@ -635,6 +650,7 @@ class CrewDaemon:
                             "semantic_distance": self.telemetry["semantic_distance"],
                             "creative_value": 0.5,
                             "kappa_delta": 0.5,
+                            "crystallization_rate": self._compute_crystallization_rate(),
                             "is_in_creative_zone": 0.4 <= self.telemetry["semantic_distance"] <= 0.6,
                             "is_in_oneiric_zone": 0.6 <= self.telemetry["semantic_distance"] <= 0.8,
                         },
