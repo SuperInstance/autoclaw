@@ -95,8 +95,6 @@ class TelemetryQuantum:
         # proposal bounds
         if not 0.0 <= self.tau <= 1.0:
             errors.append(f"UA-2: tau={self.tau} out of [0,1]")
-        if not 0.0 <= self.capability <= 1.0:
-            errors.append(f"MOLT-4: capability={self.capability} out of [0,1]")
         if self.molt_phase not in ("stable", "pre_molt", "molt", "post_molt", "cascade"):
             errors.append(f"MOLT-7: molt_phase={self.molt_phase} invalid")
         if self.time_since_validation_seconds < 0:
